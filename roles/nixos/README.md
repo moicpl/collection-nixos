@@ -41,8 +41,11 @@ on that name, one host at a time (`serial: 1`, for the prompts):
    changes, it applies it with a reboot and reconnects at the new address (by
    name for DHCP).
 
-`tasks/apps.yml` logs in with the SSH key only, checks that the host has the
-base configuration, then writes and applies the apps.
+`tasks/apps.yml` logs in with the SSH key only, reads the host's current
+network (`tasks/current_network.yml`), checks that the host has the base
+configuration, then writes and applies the apps. The apps' variables can use
+the network read: `nixos_current_subnet` (the subnet of the host's address,
+e.g. `172.16.66.0/24`), `nixos_current_interface`, `nixos_current_gateway`.
 
 ## Inputs
 

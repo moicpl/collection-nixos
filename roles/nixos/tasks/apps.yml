@@ -13,6 +13,10 @@
 - name: apps.yml | Connect to the host
   ansible.builtin.include_tasks: connect.yml
 
+# For the apps' variables: nixos_current_subnet, nixos_current_gateway...
+- name: apps.yml | Read the current network
+  ansible.builtin.include_tasks: current_network.yml
+
 - name: apps.yml | Configure the apps
   become: true
   block:

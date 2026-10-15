@@ -1,7 +1,8 @@
 ---
 # Reads the host's current IPv4 network: the interface and gateway of the
-# default route, and the address on that interface, "dhcp" when it is leased
-# (a default route from the DHCP client, or an address with a lifetime).
+# default route, the address on that interface, "dhcp" when it is leased
+# (a default route from the DHCP client, or an address with a lifetime), and
+# the subnet of that address (e.g. 172.16.66.0/24), leased or not.
 - name: current_network.yml | Read the routes and addresses
   ansible.builtin.command:
     argv:
@@ -24,6 +25,13 @@
     nixos_current_address: >-
       {{ 'dhcp' if nixos_route.protocol | default('') == 'dhcp' or nixos_address.dynamic | default(false)
          else nixos_address.local ~ '/' ~ nixos_address.prefixlen }}
+    # The address as a 32-bit number, rounded down to a multiple of the subnet
+    # size (Jinja has no bitwise and, ansible-core no ipaddr filter)
+    nixos_current_subnet: >-
+      {%- set octets = nixos_address.local.split('.') | map('int') | list -%}
+      {%- set size = 2 ** (32 - nixos_address.prefixlen | int) -%}
+      {%- set network = (octets[0] * 16777216 + octets[1] * 65536 + octets[2] * 256 + octets[3]) // size * size -%}
+      {{ [network // 16777216, network // 65536 % 256, network // 256 % 256, network % 256] | join('.') }}/{{ nixos_address.prefixlen }}
   vars:
     nixos_route: "{{ nixos_current_network.results[0].stdout | from_json | selectattr('dst', 'eq', 'default') | first }}"
     nixos_address: >-

@@ -77,8 +77,10 @@
     nixos_firewall_udp_ports:
       - 7359   # Jellyfin client discovery
 
-    # Networks that may reach the Transmission web UI around the VPN tunnel
-    arr_local_networks: 172.16.66.0/24
+    # Networks that may reach the Transmission web UI around the VPN tunnel:
+    # the host's own subnet, read by the nixos role (apps.yml) after login.
+    # Comma-separated to add others.
+    arr_local_networks: "{{ nixos_current_subnet }}"
 
     # User and group the media apps run as, owner of the files in /data (no
     # matching host account: the containers only need the numeric IDs)
