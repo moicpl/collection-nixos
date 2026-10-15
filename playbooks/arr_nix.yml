@@ -1,0 +1,341 @@
+---
+# Apps of the media machines ([nixos_arr]): Sonarr, Radarr, Lidarr and Prowlarr,
+# Transmission behind the PIA VPN, Jellyfin and Immich, as podman containers on
+# their standard ports, and a portal (Caddy, https://<host>/) with a link to
+# each of them.
+#
+# A machine is installed first by bootstrap_nix.yml (base system, SSH key
+# login), then moved in the inventory to [nixos_arr]. Then, from nixos_playbooks/:
+#   ansible-playbook arr_nix.yml
+#
+# The first run also asks for the PIA username and password and stores them in
+# Bitwarden (pia_username, pia_password).
+#
+# Ansible logs in as lab1 with the SSH key from Bitwarden (nixos_playbooks/ssh_keypair.yml).
+#
+# Storage: everything is on the machine's one disk. /data holds the downloads
+# and the media in one tree, so the *arr apps hardlink finished downloads into
+# the library instead of copying them:
+#   /data/downloads       Transmission (completed, incomplete, watch)
+#   /data/media/movies    Radarr root folder, Jellyfin library
+#   /data/media/tv        Sonarr root folder, Jellyfin library
+#   /data/media/music     Lidarr root folder, Jellyfin library
+#   /data/photos          Immich library
+# The apps see /data at the same path, so no remote path mapping is needed.
+#
+# Connections to set in the apps' web UIs: Transmission (download client) at
+# transmission:9091 in Sonarr, Radarr and Lidarr; the apps at
+# http://sonarr:8989, http://radarr:7878, http://lidarr:8686 in Prowlarr (they
+# share the arr network and reach each other by container name).
+#
+# The run ends with the URL of each service (nixos_services) on each machine.
+#
+# The portal's certificate comes from Caddy's own CA, self-signed: browsers
+# warn until its root, /var/lib/portal/data/caddy/pki/authorities/local/root.crt
+# on the machine, is imported as a trusted authority (or the warning accepted).
+
+- name: Configure the media apps
+  hosts: nixos_arr
+  gather_facts: false
+
+  vars:
+    nixos_ssh_private_key: "{{ bitwarden_secrets[ssh_key_name ~ '_private_key'] }}"
+    nixos_secret_files:
+      transmission.env: |
+        OPENVPN_USERNAME={{ bitwarden_secrets.pia_username }}
+        OPENVPN_PASSWORD={{ bitwarden_secrets.pia_password }}
+      # Same password for the PostgreSQL user (created on its first start) and
+      # the Immich connection to it
+      immich.env: |
+        POSTGRES_PASSWORD={{ bitwarden_secrets.immich_db_password }}
+        DB_PASSWORD={{ bitwarden_secrets.immich_db_password }}
+
+    # Listed at the end of the run as <scheme>://<host>:<port><path>; those
+    # with an icon (drawn in templates/portal_index.html.j2) are on the portal
+    nixos_services:
+      - {name: Portal, scheme: https, port: 443}
+      - {name: Jellyfin, scheme: http, port: 8096, icon: jellyfin}
+      - {name: Immich, scheme: http, port: 2283, icon: immich}
+      - {name: Sonarr, scheme: http, port: 8989, icon: sonarr}
+      - {name: Radarr, scheme: http, port: 7878, icon: radarr}
+      - {name: Lidarr, scheme: http, port: 8686, icon: lidarr}
+      - {name: Prowlarr, scheme: http, port: 9696, icon: prowlarr}
+      - {name: Transmission, scheme: http, port: 9091, path: /transmission/web/, icon: transmission}
+
+    # Jellyfin uses the host network (client discovery), so its ports are
+    # opened here; the published ports too, for clarity.
+    nixos_firewall_tcp_ports:
+      - 80     # Portal, redirected to HTTPS
+      - 443    # Portal
+      - 8989   # Sonarr
+      - 7878   # Radarr
+      - 8686   # Lidarr
+      - 9696   # Prowlarr
+      - 9091   # Transmission web UI and RPC
+      - 8096   # Jellyfin
+      - 2283   # Immich
+    nixos_firewall_udp_ports:
+      - 7359   # Jellyfin client discovery
+
+    # Networks that may reach the Transmission web UI around the VPN tunnel
+    arr_local_networks: 172.16.66.0/24
+
+    # User and group the media apps run as, owner of the files in /data (no
+    # matching host account: the containers only need the numeric IDs)
+    arr_media_env:
+      PUID: "2000"
+      PGID: "2000"
+      TZ: "{{ nixos_timezone }}"
+    arr_media_dir:
+      owner: "2000"
+      group: "2000"
+      mode: "0775"
+
+    nixos_container_dirs:
+      - /var/lib/sonarr
+      - /var/lib/radarr
+      - /var/lib/lidarr
+      - /var/lib/prowlarr
+      - "{{ {'path': '/var/lib/transmission'} | combine(arr_media_dir) }}"
+      - /var/lib/jellyfin
+      - /var/lib/immich
+      - /var/lib/immich/postgres
+      - /var/lib/immich/model-cache
+      - /data
+      - "{{ {'path': '/data/downloads'} | combine(arr_media_dir) }}"
+      - "{{ {'path': '/data/media'} | combine(arr_media_dir) }}"
+      - "{{ {'path': '/data/media/movies'} | combine(arr_media_dir) }}"
+      - "{{ {'path': '/data/media/tv'} | combine(arr_media_dir) }}"
+      - "{{ {'path': '/data/media/music'} | combine(arr_media_dir) }}"
+      - /data/photos
+      - /var/lib/portal
+      - /var/lib/portal/data
+      - /var/lib/portal/config
+
+    # Names the portal answers to, each with its certificate: the machine's
+    # names, and its address when the inventory has one
+    portal_site_names: >-
+      {{ [inventory_hostname, inventory_hostname_short]
+         + ([ansible_host] if ansible_host | default(inventory_hostname) != inventory_hostname else []) }}
+    nixos_container_files:
+      portal/Caddyfile: "{{ lookup('ansible.builtin.template', 'portal_Caddyfile.j2') }}"
+      portal/index.html: "{{ lookup('ansible.builtin.template', 'portal_index.html.j2') }}"
+
+    # arr: the *arr apps and Transmission; immich: Immich and its databases
+    nixos_container_networks:
+      - arr
+      - immich
+
+    nixos_container_autoupdate_label:
+      io.containers.autoupdate: registry
+    nixos_containers:
+      sonarr:
+        image: lscr.io/linuxserver/sonarr:latest
+        networks: ["arr"]
+        ports: ["8989:8989"]
+        environment: "{{ arr_media_env }}"
+        volumes:
+          - /var/lib/sonarr:/config
+          - /data:/data
+        labels: "{{ nixos_container_autoupdate_label }}"
+      radarr:
+        image: lscr.io/linuxserver/radarr:latest
+        networks: ["arr"]
+        ports: ["7878:7878"]
+        environment: "{{ arr_media_env }}"
+        volumes:
+          - /var/lib/radarr:/config
+          - /data:/data
+        labels: "{{ nixos_container_autoupdate_label }}"
+      lidarr:
+        image: lscr.io/linuxserver/lidarr:latest
+        networks: ["arr"]
+        ports: ["8686:8686"]
+        environment: "{{ arr_media_env }}"
+        volumes:
+          - /var/lib/lidarr:/config
+          - /data:/data
+        labels: "{{ nixos_container_autoupdate_label }}"
+      prowlarr:
+        image: lscr.io/linuxserver/prowlarr:latest
+        networks: ["arr"]
+        ports: ["9696:9696"]
+        environment: "{{ arr_media_env }}"
+        volumes: ["/var/lib/prowlarr:/config"]
+        labels: "{{ nixos_container_autoupdate_label }}"
+      # All its traffic goes through the PIA tunnel, except replies to
+      # arr_local_networks and to the arr network (web UI, RPC). Downloads land
+      # in /data/downloads, on the same file system as the media.
+      transmission:
+        image: docker.io/haugene/transmission-openvpn:latest
+        networks: ["arr"]
+        ports: ["9091:9091"]
+        environment: >-
+          {{ arr_media_env | combine({
+               'CREATE_TUN_DEVICE': 'false',
+               'OPENVPN_PROVIDER': 'PIA',
+               'OPENVPN_CONFIG': pia_servers,
+               'OPENVPN_OPTS': '--inactive 3600 --ping 10 --ping-exit 60',
+               'LOCAL_NETWORK': arr_local_networks,
+               'TRANSMISSION_DOWNLOAD_DIR': '/data/downloads/completed',
+               'TRANSMISSION_INCOMPLETE_DIR': '/data/downloads/incomplete',
+               'TRANSMISSION_WATCH_DIR': '/data/downloads/watch',
+               'TRANSMISSION_RPC_WHITELIST_ENABLED': 'false',
+               'TRANSMISSION_RATIO_LIMIT': '10',
+               'TRANSMISSION_RATIO_LIMIT_ENABLED': 'true',
+               'TRANSMISSION_SPEED_LIMIT_DOWN': '50000',
+               'TRANSMISSION_SPEED_LIMIT_DOWN_ENABLED': 'true',
+               'TRANSMISSION_SPEED_LIMIT_UP': '50000',
+               'TRANSMISSION_SPEED_LIMIT_UP_ENABLED': 'true'}) }}
+        environmentFiles: ["/etc/nixos/secrets/transmission.env"]
+        volumes:
+          - /var/lib/transmission:/config
+          - /data:/data
+        # The host's tun device, so the image doesn't create one with mknod
+        # (CREATE_TUN_DEVICE): podman doesn't grant MKNOD
+        devices: ["/dev/net/tun:/dev/net/tun"]
+        extraOptions: ["--cap-add=NET_ADMIN"]
+        labels: "{{ nixos_container_autoupdate_label }}"
+      # Host network for client discovery. Media read-only: the library is
+      # managed by the *arr apps.
+      jellyfin:
+        image: lscr.io/linuxserver/jellyfin:latest
+        networks: ["host"]
+        environment: "{{ arr_media_env }}"
+        volumes:
+          - /var/lib/jellyfin:/config
+          - /data/media:/data/media:ro
+        # iGPU for hardware transcoding (Playback > Transcoding in Jellyfin)
+        devices: ["/dev/dri:/dev/dri"]
+        labels: "{{ nixos_container_autoupdate_label }}"
+      # Immich: release is its latest tag (it has no "latest"), for the server
+      # and machine learning alike.
+      immich-server:
+        image: ghcr.io/immich-app/immich-server:release
+        dependsOn: ["immich-postgres", "immich-redis"]
+        networks: ["immich"]
+        ports: ["2283:2283"]
+        environment:
+          TZ: "{{ nixos_timezone }}"
+          DB_HOSTNAME: immich-postgres
+          DB_USERNAME: postgres
+          DB_DATABASE_NAME: immich
+          REDIS_HOSTNAME: immich-redis
+          IMMICH_MACHINE_LEARNING_URL: http://immich-machine-learning:3003
+        environmentFiles: ["/etc/nixos/secrets/immich.env"]
+        volumes: ["/data/photos:/data"]
+        labels: "{{ nixos_container_autoupdate_label }}"
+      # Loads its models on demand and unloads them after 5 idle minutes
+      immich-machine-learning:
+        image: ghcr.io/immich-app/immich-machine-learning:release
+        networks: ["immich"]
+        environment:
+          TZ: "{{ nixos_timezone }}"
+        volumes: ["/var/lib/immich/model-cache:/cache"]
+        labels: "{{ nixos_container_autoupdate_label }}"
+      # No floating tag: each one fixes the PostgreSQL major version, which
+      # can't change without migrating the data. This is the one in Immich's
+      # docker-compose.yml; auto-update picks up its rebuilds.
+      immich-postgres:
+        image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0
+        networks: ["immich"]
+        environment:
+          POSTGRES_USER: postgres
+          POSTGRES_DB: immich
+          POSTGRES_INITDB_ARGS: --data-checksums
+        environmentFiles: ["/etc/nixos/secrets/immich.env"]
+        volumes: ["/var/lib/immich/postgres:/var/lib/postgresql/data"]
+        extraOptions: ["--shm-size=128m"]
+        labels: "{{ nixos_container_autoupdate_label }}"
+      immich-redis:
+        image: docker.io/valkey/valkey:latest
+        networks: ["immich"]
+        labels: "{{ nixos_container_autoupdate_label }}"
+      # /data holds its CA and certificates
+      portal:
+        image: docker.io/library/caddy:2
+        ports:
+          - 80:80
+          - 443:443
+        volumes:
+          - /etc/apps/portal/Caddyfile:/etc/caddy/Caddyfile:ro
+          - /etc/apps/portal/index.html:/srv/index.html:ro
+          - /var/lib/portal/data:/data
+          - /var/lib/portal/config:/config
+        labels: "{{ nixos_container_autoupdate_label }}"
+
+  pre_tasks:
+    # Generated once, letters and digits only (Immich requirement); the
+    # bitwarden role records immich_db_password_bws_id
+    - name: arr_nix.yml | Create the Immich database password in Bitwarden
+      ansible.builtin.include_role:
+        name: bitwarden
+        apply:
+          tags: always
+      vars:
+        bitwarden_action: put
+        bitwarden_secret_name: immich_db_password
+        bitwarden_secret_content: "{{ lookup('ansible.builtin.password', '/dev/null', chars=['ascii_letters', 'digits'], length=32) }}"
+        bitwarden_secret_note: "Immich PostgreSQL password on {{ inventory_hostname }}, created by moicpl.nixos.arr_nix"
+        bitwarden_secret_id_file: "{{ ansible_inventory_sources | first }}/host_vars/{{ inventory_hostname }}.yml"
+      when: immich_db_password_bws_id is not defined
+      tags: always
+
+    # The PIA account can't be generated: asked for once, then read from
+    # Bitwarden; the bitwarden role records the IDs in group_vars/all/pia.yml
+    - name: arr_nix.yml | Ask for the PIA credentials missing from Bitwarden
+      ansible.builtin.pause:
+        prompt: "PIA VPN {{ item }}, stored in Bitwarden as pia_{{ item }}"
+        echo: false
+      loop:
+        - username
+        - password
+      when: lookup('ansible.builtin.vars', 'pia_' ~ item ~ '_bws_id', default='') | length == 0
+      register: arr_pia_input
+      no_log: true
+      tags: always
+
+    - name: arr_nix.yml | Check the PIA credentials entered
+      ansible.builtin.assert:
+        that:
+          - arr_pia_input.results | rejectattr('skipped', 'defined') | map(attribute='user_input') | select('==', '') | list | length == 0
+        fail_msg: "Enter the PIA username and password: run the playbook from an interactive terminal."
+        quiet: true
+      tags: always
+
+    - name: arr_nix.yml | Store the PIA credentials in Bitwarden
+      ansible.builtin.include_role:
+        name: bitwarden
+        apply:
+          tags: always
+      vars:
+        bitwarden_action: put
+        bitwarden_secret_name: "pia_{{ item.item }}"
+        bitwarden_secret_content: "{{ item.user_input }}"
+        bitwarden_secret_note: "Private Internet Access VPN {{ item.item }}, for transmission-openvpn (moicpl.nixos.arr_nix)"
+        bitwarden_secret_id_file: "{{ ansible_inventory_sources | first }}/group_vars/all/pia.yml"
+      loop: "{{ arr_pia_input.results | rejectattr('skipped', 'defined') | list }}"
+      loop_control:
+        label: "pia_{{ item.item }}"
+      tags: always
+
+    - name: arr_nix.yml | Get the secrets from Bitwarden
+      ansible.builtin.include_role:
+        name: bitwarden
+        apply:
+          tags: always
+      vars:
+        bitwarden_action: get
+        bitwarden_secret_name: "{{ item }}"
+      loop:
+        - "{{ ssh_key_name }}_private_key"
+        - immich_db_password
+        - pia_username
+        - pia_password
+      tags: always
+
+  tasks:
+    - name: arr_nix.yml | Configure the apps
+      ansible.builtin.import_role:
+        name: moicpl.nixos.nixos
+        tasks_from: apps.yml

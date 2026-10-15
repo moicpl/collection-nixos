@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  role_name: nixos
+  author: moicpl
+  description: Install NixOS from the live installer and manage the host declaratively (admin user, SSH, firewall, podman containers)
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: GenericLinux
+      versions:
+        - all
+dependencies: []

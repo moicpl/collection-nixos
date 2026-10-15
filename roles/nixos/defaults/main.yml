@@ -1,0 +1,89 @@
+---
+# Secrets: read by the playbook from Bitwarden (pre_tasks) and passed in.
+# Public key authorized for nixos_admin_user (base)
+nixos_ssh_public_key: ""
+# Matching private key; written to nixos_ssh_private_key_file on the controller
+# so Ansible can log in as nixos_admin_user
+nixos_ssh_private_key: ""
+# Root password of the live installer, asked by tasks/bootstrap.yml and passed
+# to the new machine for this run only: the role logs in as root with it when
+# the key login doesn't work (before the install). Never stored.
+nixos_bootstrap_root_password: ""
+# Root password of the installed system, for the console only: SSH accepts
+# keys only and no root login (base)
+nixos_root_password: ""
+# Extra root-only files, e.g. container environment files holding passwords:
+# name -> content, written to /etc/nixos/secrets/<name> (mode 0600) (apps)
+nixos_secret_files: {}
+
+# tasks/bootstrap.yml: where the hostname given for a machine on the live
+# installer is added; tasks/network.yml records the network in its host_vars
+# (the first inventory source, wherever the playbook is)
+nixos_inventory_dir: "{{ ansible_inventory_sources | first }}"
+nixos_inventory_hosts_file: "{{ nixos_inventory_dir }}/hosts/nixos"
+nixos_inventory_group: nixos
+
+# Controller file for the private key: ansible.cfg's private_key_file
+# (.ansible_ssh_key, gitignored in nixos_playbooks), else in ~/.ssh: never
+# next to the playbook, which is inside this collection's clone
+nixos_ssh_private_key_file: "{{ lookup('ansible.builtin.config', 'DEFAULT_PRIVATE_KEY_FILE') or lookup('ansible.builtin.env', 'HOME') ~ '/.ssh/ansible_nixos_key' }}"
+# Admin user: SSH key login, passwordless sudo
+nixos_admin_user: lab1
+
+# Install NixOS when the host runs the live installer. The disk is erased, so
+# the run stops unless nixos_install_wipe is true (pass it with -e); that run
+# shows the disk. Empty: the only internal disk (tasks/disk.yml); set a
+# /dev/disk/by-id path when the machine has several.
+nixos_install_disk: ""
+nixos_install_wipe: false
+# Boot partition size; the rest of the disk is the root file system
+nixos_install_boot_size: 1GiB
+
+nixos_hostname: "{{ inventory_hostname_short }}"
+nixos_timezone: UTC
+
+# Network (host_vars, written by tasks/network.yml, which asks for it when
+# nixos_ip_address is empty): "dhcp", or a fixed address with its prefix
+# (172.16.66.20/24) on nixos_ip_interface, with its gateway and DNS servers.
+# A change of address is applied with a reboot.
+nixos_ip_address: ""
+nixos_ip_interface: ""
+nixos_ip_gateway: ""
+nixos_ip_nameservers: []
+
+# Extra system packages, by nixpkgs attribute name (search.nixos.org/packages).
+# python3 is always installed, for Ansible.
+nixos_packages: []
+# Set at install from the installer version (e.g. 26.05); never change it
+# afterwards (https://nixos.org/manual/nixos/stable/options#opt-system.stateVersion)
+nixos_state_version: ""
+
+# Apps (tasks/apps.yml, written to apps.nix)
+nixos_firewall_tcp_ports: []
+nixos_firewall_udp_ports: []
+
+# virtualisation.oci-containers.containers, written as is to apps.nix:
+# name -> options (image, ports, volumes, environment, extraOptions...)
+nixos_containers: {}
+# Host directories created for the containers (systemd.tmpfiles): a path,
+# created root 0755 with owner and mode left alone afterwards so containers can
+# chown them, or {path, owner, group, mode} to set and keep those (names or
+# numeric IDs, mode as a quoted string)
+nixos_container_dirs: []
+# Config files for the containers, not secrets (world-readable): name -> content,
+# written by NixOS to /etc/apps/<name> (e.g. portal/Caddyfile). Mount each file
+# in `volumes` (/etc/apps/<name>:<path in the container>), not its directory: a
+# container is restarted when a file it mounts changes.
+nixos_container_files: {}
+# Podman networks created before the containers that list them in `networks`;
+# containers on the same network reach each other by container name
+nixos_container_networks: []
+# Daily podman auto-update for containers labelled io.containers.autoupdate=registry
+nixos_container_autoupdate: true
+
+# Listed at the end of the run, after SSH, as <scheme>://<host>:<port><path>:
+# name, scheme, port, optional path
+nixos_services: []
+
+# Run nixos-rebuild switch even if no file changed (e.g. after a failed rebuild)
+nixos_rebuild_force: false

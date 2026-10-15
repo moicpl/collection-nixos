@@ -1,0 +1,189 @@
+---
+# Apps of the [nixos_home] machines: UniFi Network Application (with its
+# MongoDB), Home Assistant and Frigate as podman containers, on their standard
+# ports, and a portal (Caddy, https://<host>/) with a link to each of them.
+#
+# A machine is installed first by bootstrap_nix.yml (base system, SSH key
+# login), then moved in the inventory to [nixos_home]. Then, from nixos_playbooks/:
+#   ansible-playbook home_management.yml
+#
+# Ansible logs in as lab1 with the SSH key from Bitwarden (nixos_playbooks/ssh_keypair.yml).
+# The run ends with the URL of each service (nixos_services) on each machine.
+#
+# The apps' own state (settings, users, cameras...) is managed by the
+# moicpl.app_config playbooks (nixos_playbooks/config/<app>.yml).
+#
+# The portal's certificate comes from Caddy's own CA, self-signed: browsers
+# warn until its root, /var/lib/portal/data/caddy/pki/authorities/local/root.crt
+# on the machine, is imported as a trusted authority (or the warning accepted).
+
+- name: Configure the home apps
+  hosts: nixos_home
+  gather_facts: false
+
+  vars:
+    nixos_ssh_private_key: "{{ bitwarden_secrets[ssh_key_name ~ '_private_key'] }}"
+    nixos_secret_files:
+      # Same password for the MongoDB root user (created on its first start)
+      # and the UniFi connection to it
+      unifi.env: |
+        MONGO_INITDB_ROOT_PASSWORD={{ bitwarden_secrets.unifi_mongo_password }}
+        MONGO_PASS={{ bitwarden_secrets.unifi_mongo_password }}
+
+    # Listed at the end of the run as <scheme>://<host>:<port><path>; those
+    # with an icon (drawn in templates/portal_index.html.j2) are on the portal
+    nixos_services:
+      - {name: Portal, scheme: https, port: 443}
+      - {name: UniFi, scheme: https, port: 8443, icon: unifi}
+      - {name: UniFi device inform, scheme: http, port: 8080, path: /inform}
+      - {name: Home Assistant, scheme: http, port: 8123, icon: homeassistant}
+      - {name: Frigate, scheme: https, port: 8971, icon: frigate}
+      - {name: Frigate RTSP restream, scheme: rtsp, port: 8554, path: /<camera>}
+
+    # UniFi and Home Assistant use the host network (device discovery), so
+    # their ports are opened here; Frigate's published ports too, for clarity.
+    nixos_firewall_tcp_ports:
+      - 80     # Portal, redirected to HTTPS
+      - 443    # Portal
+      - 8443   # UniFi web UI
+      - 8080   # UniFi device inform
+      - 8843   # UniFi guest portal HTTPS
+      - 8880   # UniFi guest portal HTTP
+      - 6789   # UniFi mobile speed test
+      - 8123   # Home Assistant
+      - 8971   # Frigate web UI (authenticated)
+      - 8554   # Frigate RTSP restream
+      - 8555   # Frigate WebRTC
+    nixos_firewall_udp_ports:
+      - 3478   # UniFi STUN
+      - 10001  # UniFi AP discovery
+      - 1900   # UniFi L2 discovery
+      - 5514   # UniFi remote syslog
+      - 8555   # Frigate WebRTC
+
+    nixos_container_dirs:
+      - /var/lib/unifi
+      - /var/lib/unifi-db
+      - /var/lib/homeassistant
+      - /var/lib/frigate
+      - /var/lib/frigate/config
+      - /var/lib/frigate/media
+      # FRIGATE_* password files, written by moicpl.app_config.frigate
+      - {path: /var/lib/frigate/secrets, owner: root, group: root, mode: "0700"}
+      - /var/lib/portal
+      - /var/lib/portal/data
+      - /var/lib/portal/config
+
+    # Names the portal answers to, each with its certificate: the machine's
+    # names, and its address when the inventory has one
+    portal_site_names: >-
+      {{ [inventory_hostname, inventory_hostname_short]
+         + ([ansible_host] if ansible_host | default(inventory_hostname) != inventory_hostname else []) }}
+    nixos_container_files:
+      portal/Caddyfile: "{{ lookup('ansible.builtin.template', 'portal_Caddyfile.j2') }}"
+      portal/index.html: "{{ lookup('ansible.builtin.template', 'portal_index.html.j2') }}"
+
+    nixos_container_autoupdate_label:
+      io.containers.autoupdate: registry
+    nixos_containers:
+      # Pinned major version: MongoDB doesn't upgrade across majors by itself.
+      # Listens on localhost only.
+      unifi-db:
+        image: docker.io/library/mongo:8.0
+        cmd: ["--bind_ip", "127.0.0.1"]
+        networks: ["host"]
+        environment:
+          MONGO_INITDB_ROOT_USERNAME: unifi
+        environmentFiles: ["/etc/nixos/secrets/unifi.env"]
+        volumes: ["/var/lib/unifi-db:/data/db"]
+        labels: "{{ nixos_container_autoupdate_label }}"
+      unifi:
+        image: lscr.io/linuxserver/unifi-network-application:latest
+        dependsOn: ["unifi-db"]
+        networks: ["host"]
+        environment:
+          TZ: "{{ nixos_timezone }}"
+          MONGO_HOST: 127.0.0.1
+          MONGO_PORT: "27017"
+          MONGO_USER: unifi
+          MONGO_DBNAME: unifi
+          MONGO_AUTHSOURCE: admin
+        environmentFiles: ["/etc/nixos/secrets/unifi.env"]
+        volumes: ["/var/lib/unifi:/config"]
+        labels: "{{ nixos_container_autoupdate_label }}"
+      homeassistant:
+        image: ghcr.io/home-assistant/home-assistant:stable
+        networks: ["host"]
+        environment:
+          TZ: "{{ nixos_timezone }}"
+        volumes:
+          - /var/lib/homeassistant:/config
+          - /run/dbus:/run/dbus:ro
+        labels: "{{ nixos_container_autoupdate_label }}"
+      # Port 5000 (unauthenticated API) stays unpublished
+      frigate:
+        image: ghcr.io/blakeblackshear/frigate:stable
+        ports:
+          - 8971:8971
+          - 8554:8554
+          - 8555:8555/tcp
+          - 8555:8555/udp
+        environment:
+          TZ: "{{ nixos_timezone }}"
+        volumes:
+          - /var/lib/frigate/config:/config
+          - /var/lib/frigate/media:/media/frigate
+          - /var/lib/frigate/secrets:/run/secrets:ro
+        # Intel iGPU for video decoding
+        devices: ["/dev/dri/renderD128:/dev/dri/renderD128"]
+        extraOptions:
+          - --shm-size=512m
+          - --mount=type=tmpfs,target=/tmp/cache,tmpfs-size=1000000000
+        labels: "{{ nixos_container_autoupdate_label }}"
+      # /data holds its CA and certificates
+      portal:
+        image: docker.io/library/caddy:2
+        ports:
+          - 80:80
+          - 443:443
+        volumes:
+          - /etc/apps/portal/Caddyfile:/etc/caddy/Caddyfile:ro
+          - /etc/apps/portal/index.html:/srv/index.html:ro
+          - /var/lib/portal/data:/data
+          - /var/lib/portal/config:/config
+        labels: "{{ nixos_container_autoupdate_label }}"
+
+  pre_tasks:
+    # Generated once; the bitwarden role records unifi_mongo_password_bws_id
+    - name: home_management.yml | Create the UniFi MongoDB password in Bitwarden
+      ansible.builtin.include_role:
+        name: bitwarden
+        apply:
+          tags: always
+      vars:
+        bitwarden_action: put
+        bitwarden_secret_name: unifi_mongo_password
+        bitwarden_secret_content: "{{ lookup('ansible.builtin.password', '/dev/null', chars=['ascii_letters', 'digits'], length=32) }}"
+        bitwarden_secret_note: "UniFi MongoDB password on {{ inventory_hostname }}, created by moicpl.nixos.home_management"
+        bitwarden_secret_id_file: "{{ ansible_inventory_sources | first }}/host_vars/{{ inventory_hostname }}.yml"
+      when: unifi_mongo_password_bws_id is not defined
+      tags: always
+
+    - name: home_management.yml | Get the secrets from Bitwarden
+      ansible.builtin.include_role:
+        name: bitwarden
+        apply:
+          tags: always
+      vars:
+        bitwarden_action: get
+        bitwarden_secret_name: "{{ item }}"
+      loop:
+        - "{{ ssh_key_name }}_private_key"
+        - unifi_mongo_password
+      tags: always
+
+  tasks:
+    - name: home_management.yml | Configure the apps
+      ansible.builtin.import_role:
+        name: moicpl.nixos.nixos
+        tasks_from: apps.yml

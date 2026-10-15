@@ -1,0 +1,67 @@
+---
+# Log in as nixos_admin_user with the SSH key when it works, else as root with
+# nixos_bootstrap_root_password when it is set (live installer, during
+# bootstrap.yml's run). Installed systems accept keys only.
+# Raw commands only until a Python interpreter is known: NixOS has none by default.
+
+# Not a change to the host; needed in check mode too so the play can connect.
+- name: connect.yml | Write the SSH private key on the controller
+  ansible.builtin.copy:
+    content: "{{ nixos_ssh_private_key | trim }}\n"
+    dest: "{{ nixos_ssh_private_key_file }}"
+    mode: "0600"
+  delegate_to: localhost
+  run_once: true
+  check_mode: false
+  no_log: true
+
+- name: connect.yml | Use the SSH key for {{ nixos_admin_user }}
+  ansible.builtin.set_fact:
+    ansible_user: "{{ nixos_admin_user }}"
+    ansible_ssh_private_key_file: "{{ nixos_ssh_private_key_file }}"
+
+- name: connect.yml | Try the SSH key login
+  ansible.builtin.raw: "true"
+  register: nixos_key_login
+  ignore_unreachable: true
+  changed_when: false
+  check_mode: false
+
+- name: connect.yml | Stop when the SSH key login doesn't work
+  ansible.builtin.fail:
+    msg: >-
+      Can't log in to {{ inventory_hostname }} as {{ nixos_admin_user }} with the SSH
+      key. A new machine is installed from the NixOS USB stick, through its
+      placeholder name, by bootstrap_nix.yml -e nixos_install_wipe=true.
+  when:
+    - nixos_key_login is unreachable
+    - nixos_bootstrap_root_password | length == 0
+
+- name: connect.yml | Fall back to the live installer's root password login
+  ansible.builtin.set_fact:
+    ansible_user: root
+    ansible_password: "{{ nixos_bootstrap_root_password }}"
+  when: nixos_key_login is unreachable
+  no_log: true
+
+- name: connect.yml | Check whether the host runs the live installer
+  ansible.builtin.raw: findmnt --noheadings --output FSTYPE /
+  register: nixos_root_fstype
+  ignore_unreachable: true
+  changed_when: false
+  check_mode: false
+
+- name: connect.yml | Stop when no login works
+  ansible.builtin.fail:
+    msg: >-
+      Can't log in to {{ inventory_hostname }}, neither as {{ nixos_admin_user }} with
+      the SSH key nor as root with the live installer's password.
+  when: nixos_root_fstype is unreachable
+
+# The live installer keeps / in RAM
+- name: connect.yml | Record whether the host runs the live installer
+  ansible.builtin.set_fact:
+    nixos_live: "{{ nixos_root_fstype.stdout | trim == 'tmpfs' }}"
+
+- name: connect.yml | Find a Python interpreter
+  ansible.builtin.include_tasks: python.yml

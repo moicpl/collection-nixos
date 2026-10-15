@@ -1,0 +1,31 @@
+---
+# Base system: install from the live installer when needed, then the
+# configuration of every NixOS host (admin user, SSH, root password, network).
+# The apps are applied by tasks/apps.yml.
+- name: main.yml | Check the role inputs
+  ansible.builtin.assert:
+    that:
+      - nixos_ssh_public_key | length > 0
+      - nixos_ssh_private_key | length > 0
+      - nixos_root_password | length > 0
+    fail_msg: >-
+      Pass nixos_ssh_public_key, nixos_ssh_private_key and nixos_root_password
+      (from Bitwarden).
+    quiet: true
+
+- name: main.yml | Connect to the host
+  ansible.builtin.include_tasks: connect.yml
+
+- name: main.yml | Ask for the network
+  ansible.builtin.include_tasks: network.yml
+  when: nixos_ip_address | length == 0
+
+- name: main.yml | Install NixOS from the live installer
+  ansible.builtin.include_tasks: install.yml
+  when: nixos_live | bool
+
+- name: main.yml | Configure the installed system
+  ansible.builtin.include_tasks: configure.yml
+
+- name: main.yml | Show how to reach the host
+  ansible.builtin.include_tasks: services.yml

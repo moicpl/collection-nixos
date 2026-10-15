@@ -1,0 +1,91 @@
+---
+# Install NixOS machines and keep their base system: admin user lab1 reachable
+# by SSH key only, console-only root password, network (DHCP or fixed address),
+# base packages. The apps come afterwards from their own playbook (home_management.yml,
+# arr_nix.yml...), which runs on the machine's apps group.
+#
+# New machine: boot it from the NixOS USB stick and set a root password on its
+# console (`passwd`). It answers as nixos.maison, a placeholder
+# ([nixos_bootstrap] in the inventory). Then, from an interactive terminal in nixos_playbooks/:
+#   ansible-playbook bootstrap_nix.yml -e nixos_install_wipe=true
+# It asks for that password (only used for this install, never stored), the
+# machine's hostname and its network, adds it to [nixos], erases its only
+# internal disk, whatever it holds, and installs it. Then move it in the
+# inventory from [nixos] to its apps group and run that group's playbook.
+#
+# Afterwards, to apply base changes to all the NixOS machines:
+#   ansible-playbook bootstrap_nix.yml
+# A machine without a network in its host_vars is asked for one (DHCP or a
+# fixed address); a change of address reboots it.
+#
+# Ansible logs in as lab1 with the SSH key from Bitwarden (nixos_playbooks/ssh_keypair.yml),
+# or, on the live installer only, as root with the password entered. Each
+# machine gets its own root password for the console, generated into Bitwarden
+# as <host>_root_password (dots as _) before it is set.
+
+- name: Name the machine running the NixOS live installer
+  hosts: nixos_bootstrap
+  gather_facts: false
+
+  tasks:
+    - name: bootstrap_nix.yml | Name the machine and add it to the inventory
+      ansible.builtin.include_role:
+        name: moicpl.nixos.nixos
+        tasks_from: bootstrap.yml
+        apply:
+          tags: always
+      tags: always
+
+- name: Install and configure the NixOS base system
+  hosts: nixos
+  gather_facts: false
+  # One machine at a time, so each gets its own prompts (network)
+  serial: 1
+
+  vars:
+    nixos_ssh_public_key: "{{ bitwarden_secrets[ssh_key_name ~ '_public_key'] }}"
+    nixos_ssh_private_key: "{{ bitwarden_secrets[ssh_key_name ~ '_private_key'] }}"
+    nixos_root_password_secret: "{{ inventory_hostname | replace('.', '_') }}_root_password"
+    nixos_root_password: "{{ bitwarden_secrets[nixos_root_password_secret] }}"
+
+    # nixpkgs attribute names (search.nixos.org/packages)
+    nixos_packages:
+      - vim
+      - htop
+      - btop
+      - ncdu
+      - nettools
+
+  pre_tasks:
+    # Generated once per machine and stored before the machine uses it; the
+    # bitwarden role records <host>_root_password_bws_id in its host_vars
+    - name: bootstrap_nix.yml | Create the root password in Bitwarden
+      ansible.builtin.include_role:
+        name: bitwarden
+        apply:
+          tags: always
+      vars:
+        bitwarden_action: put
+        bitwarden_secret_name: "{{ nixos_root_password_secret }}"
+        bitwarden_secret_content: "{{ lookup('ansible.builtin.password', '/dev/null', chars=['ascii_letters', 'digits'], length=24) }}"
+        bitwarden_secret_note: "Console root password of {{ inventory_hostname }}, created by moicpl.nixos.bootstrap_nix"
+        bitwarden_secret_id_file: "{{ ansible_inventory_sources | first }}/host_vars/{{ inventory_hostname }}.yml"
+      when: lookup('ansible.builtin.vars', nixos_root_password_secret ~ '_bws_id', default='') | length == 0
+      tags: always
+
+    - name: bootstrap_nix.yml | Get the secrets from Bitwarden
+      ansible.builtin.include_role:
+        name: bitwarden
+        apply:
+          tags: always
+      vars:
+        bitwarden_action: get
+        bitwarden_secret_name: "{{ item }}"
+      loop:
+        - "{{ ssh_key_name }}_public_key"
+        - "{{ ssh_key_name }}_private_key"
+        - "{{ nixos_root_password_secret }}"
+      tags: always
+
+  roles:
+    - nixos

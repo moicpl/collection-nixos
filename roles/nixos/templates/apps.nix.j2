@@ -1,0 +1,86 @@
+{#- Converts YAML data to a Nix value: strings are quoted, with ${ escaped so
+    Nix doesn't interpolate it; attribute names are quoted when needed. #}
+{%- macro nix(value, indent=0) -%}
+{%- if value is boolean -%}
+{{ value | lower }}
+{%- elif value is number -%}
+{{ value }}
+{%- elif value is string -%}
+{{ value | to_json(ensure_ascii=false) | replace('${', '\\${') }}
+{%- elif value is mapping -%}
+{
+{% for key in value | sort %}
+{{ '  ' * (indent + 1) }}{{ key if key is match('^[A-Za-z_][A-Za-z0-9_-]*$') else key | to_json }} = {{ nix(value[key], indent + 1) }};
+{% endfor %}
+{{ '  ' * indent }}}
+{%- else -%}
+[
+{% for element in value %}
+{{ '  ' * (indent + 1) }}{{ nix(element, indent + 1) }}
+{% endfor %}
+{{ '  ' * indent }}]
+{%- endif -%}
+{%- endmacro -%}
+{{ ansible_managed | comment }}
+{ config, lib, pkgs, ... }:
+
+{
+  virtualisation.podman = {
+    enable = true;
+    autoPrune.enable = true;
+  };
+
+  networking.firewall = {
+    allowedTCPPorts = [ {{ nixos_firewall_tcp_ports | map('string') | join(' ') }} ];
+    allowedUDPPorts = [ {{ nixos_firewall_udp_ports | map('string') | join(' ') }} ];
+  };
+
+  virtualisation.oci-containers.backend = "podman";
+  virtualisation.oci-containers.containers = {{ nix(nixos_containers, 1) }};
+
+  systemd.tmpfiles.rules = [
+{% for dir in nixos_container_dirs %}
+{%   set dir = dir if dir is mapping else {'path': dir} %}
+    "d {{ dir.path }} {{ dir.mode | default('-') }} {{ dir.owner | default('-') }} {{ dir.group | default('-') }} -"
+{% endfor %}
+  ];
+{% for name in nixos_container_files | sort %}
+{%   if loop.first %}
+
+  # Config files of the containers (no secrets: world-readable). They are links
+  # into the Nix store, so containers mount them one by one, not their directory.
+{%   endif %}
+  environment.etc.{{ ('apps/' ~ name) | to_json }}.text = {{ nix(nixos_container_files[name], 1) }};
+{% endfor %}
+{% for container in nixos_containers | sort %}
+{%   set mounts = nixos_containers[container].volumes | default([]) | map('regex_replace', ':.*', '') | list %}
+{%   set files = nixos_container_files | sort | select('in', mounts | map('regex_replace', '^/etc/apps/', '') | list) | list %}
+{%   if files %}
+
+  # Restarts {{ container }} when a config file it mounts changes
+  systemd.services."podman-{{ container }}".restartTriggers = [ {% for name in files %}config.environment.etc.{{ ('apps/' ~ name) | to_json }}.source {% endfor %}];
+{%   endif %}
+{% endfor %}
+{% for network in nixos_container_networks %}
+{%   set users = nixos_containers | dict2items | selectattr('value.networks', 'defined')
+                 | selectattr('value.networks', 'contains', network) | map(attribute='key') | list %}
+
+  # Podman network {{ network }}: its containers reach each other by name
+  systemd.services."podman-network-{{ network }}" = {
+    path = [ config.virtualisation.podman.package ];
+    script = "podman network exists {{ network }} || podman network create {{ network }}";
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+    };
+    wantedBy = [ "multi-user.target" ];
+    before = [ {% for name in users %}"podman-{{ name }}.service" {% endfor %}];
+    requiredBy = [ {% for name in users %}"podman-{{ name }}.service" {% endfor %}];
+  };
+{% endfor %}
+{% if nixos_container_autoupdate | bool %}
+
+  # Pulls newer images daily and restarts the containers that use them
+  systemd.timers.podman-auto-update.wantedBy = [ "timers.target" ];
+{% endif %}
+}

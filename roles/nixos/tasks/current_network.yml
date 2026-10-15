@@ -1,0 +1,31 @@
+---
+# Reads the host's current IPv4 network: the interface and gateway of the
+# default route, and the address on that interface, "dhcp" when it is leased
+# (a default route from the DHCP client, or an address with a lifetime).
+- name: current_network.yml | Read the routes and addresses
+  ansible.builtin.command:
+    argv:
+      - ip
+      - -json
+      - -4
+      - "{{ item }}"
+      - show
+  loop:
+    - route
+    - address
+  register: nixos_current_network
+  changed_when: false
+  check_mode: false
+
+- name: current_network.yml | Record the current network
+  ansible.builtin.set_fact:
+    nixos_current_interface: "{{ nixos_route.dev }}"
+    nixos_current_gateway: "{{ nixos_route.gateway | default('') }}"
+    nixos_current_address: >-
+      {{ 'dhcp' if nixos_route.protocol | default('') == 'dhcp' or nixos_address.dynamic | default(false)
+         else nixos_address.local ~ '/' ~ nixos_address.prefixlen }}
+  vars:
+    nixos_route: "{{ nixos_current_network.results[0].stdout | from_json | selectattr('dst', 'eq', 'default') | first }}"
+    nixos_address: >-
+      {{ (nixos_current_network.results[1].stdout | from_json
+          | selectattr('ifname', 'eq', nixos_route.dev) | first).addr_info | first }}

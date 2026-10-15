@@ -1,0 +1,61 @@
+---
+# Asks for the network of a host that has none in the inventory (nixos_ip_address
+# empty): DHCP, or a fixed address on the interface of its current default
+# route. Records the answer in its host_vars and uses it for the rest of the run.
+# The play needs serial: 1 so each host gets its own prompts (pause runs once
+# per batch of hosts).
+- name: network.yml | Read the current network
+  ansible.builtin.include_tasks: current_network.yml
+
+- name: network.yml | Ask for the address of {{ inventory_hostname }}
+  ansible.builtin.pause:
+    prompt: >-
+      Network of {{ inventory_hostname }}, now {{ nixos_current_address }} on
+      {{ nixos_current_interface }}: a fixed address with its prefix
+      (e.g. 172.16.66.20/24), or Enter for DHCP
+    echo: true
+  register: nixos_network_address_input
+
+- name: network.yml | Ask for the gateway and DNS servers
+  when: nixos_network_address_input.user_input | trim | length > 0
+  block:
+    - name: network.yml | Ask for the gateway
+      ansible.builtin.pause:
+        prompt: "Gateway of {{ inventory_hostname }}, or Enter for {{ nixos_current_gateway }}"
+        echo: true
+      register: nixos_network_gateway_input
+
+    - name: network.yml | Ask for the DNS servers
+      ansible.builtin.pause:
+        prompt: "DNS servers of {{ inventory_hostname }}, comma-separated, or Enter for the gateway"
+        echo: true
+      register: nixos_network_dns_input
+
+- name: network.yml | Use the network entered
+  ansible.builtin.set_fact:
+    nixos_ip_address: "{{ nixos_network_address_input.user_input | trim or 'dhcp' }}"
+    nixos_ip_interface: "{{ nixos_current_interface }}"
+    nixos_ip_gateway: "{{ nixos_network_gateway }}"
+    nixos_ip_nameservers: >-
+      {{ (nixos_network_dns_input.user_input | default('')).split(',') | map('trim') | select | list
+         or [nixos_network_gateway] }}
+  vars:
+    nixos_network_gateway: "{{ nixos_network_gateway_input.user_input | default('') | trim or nixos_current_gateway }}"
+
+# Fixed address: ansible_host too, as a new address may not resolve by name
+- name: network.yml | Record the network in the host_vars
+  ansible.builtin.blockinfile:
+    path: "{{ nixos_inventory_dir }}/host_vars/{{ inventory_hostname }}.yml"
+    marker: "# {mark} NETWORK, asked by bootstrap_nix.yml (delete to be asked again)"
+    insertbefore: '^\.\.\.$'
+    create: true
+    mode: "0644"
+    block: |
+      nixos_ip_address: {{ nixos_ip_address | to_json }}
+      {% if nixos_ip_fixed | bool %}
+      nixos_ip_interface: {{ nixos_ip_interface | to_json }}
+      nixos_ip_gateway: {{ nixos_ip_gateway | to_json }}
+      nixos_ip_nameservers: {{ nixos_ip_nameservers | to_json }}
+      ansible_host: {{ nixos_ip_host | to_json }}
+      {% endif %}
+  delegate_to: localhost

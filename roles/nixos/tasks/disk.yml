@@ -1,0 +1,55 @@
+---
+# Finds the install disk when nixos_install_disk isn't set: the only internal
+# disk, i.e. not USB, removable, read-only or zram, and not holding a mounted
+# file system other than /mnt (the live installer's medium has /iso). Sets
+# nixos_install_disk to its /dev/disk/by-id path.
+- name: disk.yml | List the disks
+  ansible.builtin.command:
+    argv:
+      - lsblk
+      - --json
+      - --tree
+      - --bytes
+      - --output
+      - NAME,PATH,TYPE,RM,RO,TRAN,SIZE,MODEL,ID-LINK,MOUNTPOINTS
+  register: nixos_lsblk
+  changed_when: false
+  check_mode: false
+
+- name: disk.yml | Find the internal disks
+  ansible.builtin.set_fact:
+    nixos_disks: "{{ nixos_disks_found | from_json }}"
+  vars:
+    nixos_disks_found: >-
+      {% set disks = [] %}
+      {% for disk in (nixos_lsblk.stdout | from_json).blockdevices if disk.type == 'disk' %}
+      {%   set mounts = disk | to_json | regex_findall('"mountpoints": \[([^\]]*)\]') | join(',')
+                        | regex_findall('"([^"]+)"') | reject('match', '/mnt(/|$)') | list %}
+      {%   set _ = disks.append({
+             'device': '/dev/disk/by-id/' ~ disk['id-link'] if disk['id-link'] else disk.path,
+             'description': disk.path ~ ', ' ~ (disk.size | human_readable) ~ ', '
+                            ~ (disk.model or 'unknown model') ~ ', ' ~ (disk.tran or 'unknown transport'),
+             'internal': not (disk.rm or disk.ro or disk.tran == 'usb' or disk.name is match('zram')
+                              or mounts | length > 0)}) %}
+      {% endfor %}
+      {{ disks | to_json }}
+
+- name: disk.yml | Check that there is one internal disk
+  ansible.builtin.assert:
+    that:
+      - nixos_disks | selectattr('internal') | list | length == 1
+    fail_msg: >-
+      Can't choose the install disk of {{ inventory_hostname }}:
+      {{ nixos_disks | selectattr('internal') | list | length }} internal disks found.
+      Set nixos_install_disk in its host_vars to one of:
+      {{ nixos_disks_listed | map(attribute='device') | zip(nixos_disks_listed | map(attribute='description'))
+         | map('join', ' (') | map('regex_replace', '$', ')') | join('; ') }}
+    quiet: true
+  vars:
+    # Internal disks, or all of them when none is
+    nixos_disks_listed: "{{ nixos_disks | selectattr('internal') | list or nixos_disks }}"
+
+- name: disk.yml | Use the internal disk
+  ansible.builtin.set_fact:
+    nixos_install_disk: "{{ (nixos_disks | selectattr('internal') | first).device }}"
+    nixos_install_disk_description: "{{ (nixos_disks | selectattr('internal') | first).description }}"

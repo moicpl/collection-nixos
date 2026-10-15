@@ -1,0 +1,28 @@
+{{ ansible_managed | comment }}
+# Portal of {{ inventory_hostname }} (nixos apps playbooks): HTTPS with a cert from
+# Caddy's own self-signed CA, HTTP redirected to HTTPS.
+{
+	# The CA stays in /data; browsers trust it only if its root.crt is imported
+	skip_install_trust
+	servers {
+		protocols h1 h2
+	}
+	# Long-lived certs: an exception accepted once in the browser stays valid
+	# (Caddy's defaults are 7 days for the intermediate, 12 hours for the cert).
+	# Both must stay under the root's 10 years.
+	pki {
+		ca local {
+			intermediate_lifetime 3000d
+		}
+	}
+}
+
+{{ portal_site_names | join(', ') }} {
+	tls {
+		issuer internal {
+			lifetime 2900d
+		}
+	}
+	root * /srv
+	file_server
+}

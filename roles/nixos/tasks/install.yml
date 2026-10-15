@@ -1,0 +1,113 @@
+---
+# Erases nixos_install_disk and installs NixOS on it from the live installer,
+# then reboots into the installed system. Runs only on the live installer.
+- name: install.yml | Find the install disk
+  ansible.builtin.include_tasks: disk.yml
+  when: nixos_install_disk | length == 0
+
+- name: install.yml | Check that the disk may be erased
+  ansible.builtin.assert:
+    that:
+      - not ansible_check_mode
+      - nixos_install_wipe | bool
+    fail_msg: >-
+      {{ inventory_hostname }} runs the NixOS live installer. Installing erases
+      {{ nixos_install_disk }}{{ ' (' ~ nixos_install_disk_description ~ ')' if nixos_install_disk_description is defined }}.
+      If that is the right disk, rerun without --check, with -e nixos_install_wipe=true;
+      otherwise set nixos_install_disk in the host_vars.
+    quiet: true
+
+- name: install.yml | Read the installer NixOS version
+  ansible.builtin.command: nixos-version
+  register: nixos_installer_version
+  changed_when: false
+
+# stateVersion is the release the system was first installed with
+- name: install.yml | Set the state version
+  ansible.builtin.set_fact:
+    nixos_state_version: "{{ nixos_state_version | default('', true) or nixos_installer_version.stdout.split('.')[:2] | join('.') }}"
+
+- name: install.yml | Install NixOS on {{ nixos_install_disk }}
+  become: true
+  block:
+    # LVM volumes from a previous system must be inactive before the disk is
+    # wiped. File system types are explicit: udev may still report the old ones.
+    - name: install.yml | Erase, partition, format and mount {{ nixos_install_disk }}
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          if mountpoint -q /mnt; then umount --recursive /mnt; fi
+          vgchange --activate n
+          for part in $(lsblk --noheadings --raw --paths --output NAME,TYPE "$DISK" | awk '$2 == "part" { print $1 }'); do
+            wipefs --all --force "$part"
+          done
+          wipefs --all --force "$DISK"
+          parted --script --align optimal "$DISK" -- \
+            mklabel gpt \
+            mkpart lab1-boot fat32 1MiB "$BOOT_SIZE" \
+            set 1 esp on \
+            mkpart lab1-root ext4 "$BOOT_SIZE" 100%
+          udevadm settle
+          mkfs.fat -F 32 -n BOOT /dev/disk/by-partlabel/lab1-boot
+          mkfs.ext4 -F -q -L nixos /dev/disk/by-partlabel/lab1-root
+          mount -t ext4 /dev/disk/by-partlabel/lab1-root /mnt
+          mkdir -p /mnt/boot
+          mount -t vfat -o umask=077 /dev/disk/by-partlabel/lab1-boot /mnt/boot
+      environment:
+        DISK: "{{ nixos_install_disk }}"
+        BOOT_SIZE: "{{ nixos_install_boot_size }}"
+      changed_when: true
+
+    - name: install.yml | Generate the hardware configuration
+      ansible.builtin.command:
+        argv:
+          - nixos-generate-config
+          - --root
+          - /mnt
+      changed_when: true
+
+    # Same host key before and after the reboot, so SSH clients don't refuse it
+    - name: install.yml | Keep the installer SSH host keys
+      ansible.builtin.shell:
+        cmd: mkdir -p /mnt/etc/ssh && cp -p /etc/ssh/ssh_host_* /mnt/etc/ssh/
+      changed_when: true
+
+    - name: install.yml | Write the NixOS configuration
+      ansible.builtin.include_tasks: files.yml
+      vars:
+        nixos_files_root: /mnt
+
+    - name: install.yml | Run nixos-install
+      ansible.builtin.command:
+        argv:
+          - nixos-install
+          - --no-root-passwd
+          - --root
+          - /mnt
+      async: 3600
+      poll: 15
+      changed_when: true
+
+    - name: install.yml | Reboot into the installed system
+      ansible.builtin.shell:
+        cmd: sleep 2 && systemctl reboot
+      async: 30
+      poll: 0
+      changed_when: true
+
+# Only the installed system has the admin user and python3 at this path, so
+# the connection succeeds once it is up (not while the installer shuts down).
+# At its fixed address, or with DHCP at the installer's address: both use the
+# MAC address as DHCP client ID, and a new FQDN may not resolve yet.
+- name: install.yml | Log in to the installed system with the SSH key
+  ansible.builtin.set_fact:
+    ansible_host: "{{ nixos_ip_host if nixos_ip_fixed | bool else ansible_host | default(inventory_hostname) }}"
+    ansible_user: "{{ nixos_admin_user }}"
+    ansible_password: ""
+    ansible_python_interpreter: /run/current-system/sw/bin/python3
+    nixos_live: false
+
+- name: install.yml | Wait for the installed system (remove the USB stick if the installer boots again)
+  ansible.builtin.wait_for_connection:
+    delay: 20
+    timeout: 900

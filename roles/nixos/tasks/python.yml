@@ -1,0 +1,16 @@
+---
+# The installed system gets python3 from configuration.nix. Elsewhere (live
+# installer, first run on a system installed by hand) it's fetched into the Nix
+# store; nix-build prints the store path on its last line.
+- name: python.yml | Find or fetch python3
+  ansible.builtin.raw: >-
+    if [ -x /run/current-system/sw/bin/python3 ]; then
+    echo /run/current-system/sw/bin/python3;
+    else echo "$(nix-build '<nixpkgs>' -A python3 --no-out-link)/bin/python3"; fi
+  register: nixos_python
+  changed_when: false
+  check_mode: false
+
+- name: python.yml | Use the python3 interpreter found
+  ansible.builtin.set_fact:
+    ansible_python_interpreter: "{{ nixos_python.stdout_lines | last | trim }}"

@@ -1,0 +1,152 @@
+---
+# Runs against the placeholder name a machine has while it runs the NixOS live
+# installer from the USB stick (hostname nixos, so e.g. nixos.maison). With
+# nixos_install_wipe true, whatever the machine holds: asks for the root
+# password set on its console and checks it, asks for its FQDN (its final name,
+# possibly in another domain than the placeholder's), adds it to the inventory
+# (hosts file and host_vars) and to nixos_inventory_group for the rest of the
+# run, at the address it answered on, with that password to log in.
+- name: bootstrap.yml | Find the address of {{ inventory_hostname }}
+  ansible.builtin.command:
+    argv:
+      - getent
+      - ahostsv4
+      - "{{ inventory_hostname }}"
+  delegate_to: localhost
+  register: nixos_bootstrap_address
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+# The placeholder name can outlive the DHCP lease of the last installer
+- name: bootstrap.yml | Check that a machine answers SSH there
+  ansible.builtin.wait_for:
+    host: "{{ nixos_bootstrap_address.stdout.split()[0] }}"
+    port: 22
+    timeout: 5
+  delegate_to: localhost
+  register: nixos_bootstrap_ssh
+  failed_when: false
+  when: nixos_bootstrap_address.rc == 0
+
+# wait_for reports the port state only when the port answered
+- name: bootstrap.yml | Record whether a machine waits for the install
+  ansible.builtin.set_fact:
+    nixos_bootstrap_found: "{{ nixos_bootstrap_address.rc == 0 and nixos_bootstrap_ssh.state is defined }}"
+
+- name: bootstrap.yml | Skip the install without the erase switch
+  when: not nixos_install_wipe | bool
+  block:
+    - name: bootstrap.yml | Report the machine waiting for the install
+      ansible.builtin.debug:
+        msg: >-
+          A machine waits for the install at {{ inventory_hostname }}
+          ({{ nixos_bootstrap_address.stdout.split()[0] }}). Installing erases its disk,
+          whatever it holds: rerun with -e nixos_install_wipe=true.
+      when: nixos_bootstrap_found | bool
+
+    - name: bootstrap.yml | Leave the placeholder alone
+      ansible.builtin.meta: end_host
+
+- name: bootstrap.yml | Stop when no machine waits for the install
+  ansible.builtin.fail:
+    msg: >-
+      No machine answers as {{ inventory_hostname }}. Boot it from the NixOS USB
+      stick, set the root password on its console (`passwd`), then rerun the playbook.
+  when: not nixos_bootstrap_found | bool
+
+- name: bootstrap.yml | Ask for the root password of the live installer
+  ansible.builtin.pause:
+    prompt: >-
+      Root password set with passwd on the console of {{ inventory_hostname }}
+      ({{ nixos_bootstrap_address.stdout.split()[0] }})
+    echo: false
+  register: nixos_bootstrap_password_input
+  when: nixos_bootstrap_root_password | length == 0
+  no_log: true
+
+- name: bootstrap.yml | Use the password entered
+  ansible.builtin.set_fact:
+    nixos_bootstrap_root_password: "{{ nixos_bootstrap_password_input.user_input }}"
+  when: nixos_bootstrap_password_input is not skipped
+  no_log: true
+
+- name: bootstrap.yml | Try the root password login
+  ansible.builtin.raw: "true"
+  vars:
+    ansible_host: "{{ nixos_bootstrap_address.stdout.split()[0] }}"
+    ansible_user: root
+    ansible_password: "{{ nixos_bootstrap_root_password }}"
+  register: nixos_bootstrap_login
+  ignore_unreachable: true
+  changed_when: false
+  check_mode: false
+
+- name: bootstrap.yml | Stop when the root password doesn't work
+  ansible.builtin.fail:
+    msg: >-
+      Can't log in to {{ inventory_hostname }} as root with that password. Set it
+      again with `passwd` on the live installer's console, then rerun the playbook.
+  when: nixos_bootstrap_login is unreachable
+
+- name: bootstrap.yml | Ask for the FQDN
+  ansible.builtin.pause:
+    prompt: >-
+      FQDN of the machine at {{ inventory_hostname }}
+      ({{ nixos_bootstrap_address.stdout.split()[0] }}), e.g. host.domain;
+      its disk will be erased
+    echo: true
+  register: nixos_bootstrap_input
+
+- name: bootstrap.yml | Set the machine's inventory name
+  ansible.builtin.set_fact:
+    nixos_bootstrap_fqdn: "{{ nixos_bootstrap_input.user_input | default('') | trim | lower }}"
+
+# The hostname is the first label
+- name: bootstrap.yml | Check the FQDN
+  ansible.builtin.assert:
+    that:
+      - nixos_bootstrap_fqdn is match('^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$')
+      - nixos_bootstrap_fqdn is not match('nixos')
+    fail_msg: >-
+      '{{ nixos_bootstrap_fqdn }}' isn't a valid FQDN: dot-separated labels of letters,
+      digits and dashes (host.domain), not starting with nixos (the placeholder of
+      the live installer). Run the playbook from an interactive terminal.
+    quiet: true
+
+# Without its header, the machine would be appended to whatever group ends the file
+- name: bootstrap.yml | Add the inventory group to the hosts file
+  ansible.builtin.lineinfile:
+    path: "{{ nixos_inventory_hosts_file }}"
+    line: "[{{ nixos_inventory_group }}]"
+  delegate_to: localhost
+
+- name: bootstrap.yml | Add the machine to the inventory hosts file
+  ansible.builtin.lineinfile:
+    path: "{{ nixos_inventory_hosts_file }}"
+    insertafter: '^\[{{ nixos_inventory_group }}\]$'
+    line: "{{ nixos_bootstrap_fqdn }}"
+  delegate_to: localhost
+
+# The bitwarden role records the machine's secret IDs here, and network.yml its network
+- name: bootstrap.yml | Create the machine's host_vars file
+  ansible.builtin.copy:
+    content: |
+      ---
+      # NixOS machine installed by moicpl.nixos.bootstrap_nix
+
+      # Bitwarden secret IDs, recorded by the bitwarden role
+      ...
+    dest: "{{ nixos_inventory_dir }}/host_vars/{{ nixos_bootstrap_fqdn }}.yml"
+    mode: "0644"
+    force: false
+  delegate_to: localhost
+
+# The password stays in memory, for this run's install only
+- name: bootstrap.yml | Install the machine under its name in this run
+  ansible.builtin.add_host:
+    name: "{{ nixos_bootstrap_fqdn }}"
+    groups: "{{ nixos_inventory_group }}"
+    ansible_host: "{{ nixos_bootstrap_address.stdout.split()[0] }}"
+    nixos_bootstrap_root_password: "{{ nixos_bootstrap_root_password }}"
+  no_log: true

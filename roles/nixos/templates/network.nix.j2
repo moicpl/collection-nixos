@@ -1,0 +1,24 @@
+{{ ansible_managed | comment }}
+{ config, lib, pkgs, ... }:
+
+{
+{% if nixos_ip_fixed | bool %}
+  # Fixed address on {{ nixos_ip_interface }}
+  networking.useDHCP = false;
+  networking.interfaces."{{ nixos_ip_interface }}".ipv4.addresses = [ {
+    address = "{{ nixos_ip_host }}";
+    prefixLength = {{ nixos_ip_prefix }};
+  } ];
+  networking.defaultGateway = "{{ nixos_ip_gateway }}";
+  networking.nameservers = [ {% for server in nixos_ip_nameservers %}"{{ server }}" {% endfor %}];
+{%   if '.' in inventory_hostname %}
+  networking.search = [ "{{ inventory_hostname.split('.', 1)[1] }}" ];
+{%   endif %}
+{% else %}
+  # DHCP on every interface; DNS servers and search domain come from DHCP.
+  # MAC address as DHCP client ID, like the live installer (NetworkManager), so
+  # the install keeps the installer's lease and address
+  networking.useDHCP = true;
+  networking.dhcpcd.extraConfig = "clientid";
+{% endif %}
+}

@@ -1,0 +1,79 @@
+---
+- name: configure.yml | Configure NixOS
+  become: true
+  block:
+    # stateVersion stays the one the system was installed with
+    - name: configure.yml | Read the current configuration
+      ansible.builtin.slurp:
+        src: /etc/nixos/configuration.nix
+      register: nixos_current_config
+      when: nixos_state_version | length == 0
+
+    - name: configure.yml | Keep the installed state version
+      ansible.builtin.set_fact:
+        nixos_state_version: >-
+          {{ nixos_current_config.content | b64decode
+             | regex_search('system\.stateVersion\s*=\s*"([^"]+)"', '\1') | first }}
+      when: nixos_state_version | length == 0
+
+    # Hosts configured before the base/apps split had their containers there
+    - name: configure.yml | Rename containers.nix to apps.nix
+      ansible.builtin.command:
+        argv:
+          - mv
+          - /etc/nixos/containers.nix
+          - /etc/nixos/apps.nix
+        creates: /etc/nixos/apps.nix
+        removes: /etc/nixos/containers.nix
+      register: nixos_apps_renamed
+
+    - name: configure.yml | Write the NixOS configuration
+      ansible.builtin.include_tasks: files.yml
+      vars:
+        nixos_files_root: ""
+
+    - name: configure.yml | Read the current network
+      ansible.builtin.include_tasks: current_network.yml
+
+    - name: configure.yml | Apply the configuration with nixos-rebuild
+      ansible.builtin.command:
+        argv:
+          - nixos-rebuild
+          - switch
+      async: 3600
+      poll: 15
+      changed_when: true
+      when:
+        - nixos_files_changed | bool or nixos_apps_renamed is changed or nixos_rebuild_force | bool
+        - nixos_current_address == nixos_ip_target
+
+    # A new address would cut the connection in the middle of a switch: the
+    # new configuration starts with a reboot instead, and the run reconnects
+    # at the new address (by name for DHCP).
+    - name: configure.yml | Change the address
+      when: nixos_current_address != nixos_ip_target
+      block:
+        - name: configure.yml | Apply the configuration at the next boot
+          ansible.builtin.command:
+            argv:
+              - nixos-rebuild
+              - boot
+          async: 3600
+          poll: 15
+          changed_when: true
+
+        - name: configure.yml | Reboot on the new address
+          ansible.builtin.shell:
+            cmd: sleep 2 && systemctl reboot
+          async: 30
+          poll: 0
+          changed_when: true
+
+        - name: configure.yml | Connect to the new address
+          ansible.builtin.set_fact:
+            ansible_host: "{{ nixos_ip_host if nixos_ip_fixed | bool else inventory_hostname }}"
+
+        - name: configure.yml | Wait for {{ nixos_ip_target }}
+          ansible.builtin.wait_for_connection:
+            delay: 20
+            timeout: 600

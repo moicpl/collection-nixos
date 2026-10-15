@@ -1,0 +1,8 @@
+---
+# Derived from nixos_ip_address: whether the address is fixed, the address alone
+# and its prefix length (24 when omitted), and the address the host will have:
+# the fixed one, or "dhcp"
+nixos_ip_fixed: "{{ nixos_ip_address not in ['', 'dhcp'] }}"
+nixos_ip_host: "{{ nixos_ip_address.split('/')[0] }}"
+nixos_ip_prefix: "{{ (nixos_ip_address.split('/') + ['24'])[1] }}"
+nixos_ip_target: "{{ (nixos_ip_host ~ '/' ~ nixos_ip_prefix) if nixos_ip_fixed | bool else 'dhcp' }}"

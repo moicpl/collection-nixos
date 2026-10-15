@@ -1,0 +1,18 @@
+---
+# SSH, then nixos_services. By name, and by the address used in this run when
+# it differs (a new FQDN may not resolve until the machine is on its final network)
+- name: services.yml | Show how to reach the services
+  ansible.builtin.debug:
+    msg: "{{ nixos_service_lines | from_json }}"
+  vars:
+    nixos_service_hosts: "{{ [inventory_hostname] + ([ansible_host] if ansible_host | default(inventory_hostname) != inventory_hostname else []) }}"
+    nixos_service_lines: >-
+      {% set lines = [] %}
+      {% for service in [{'name': 'SSH', 'scheme': 'ssh', 'user': nixos_admin_user ~ '@', 'port': 22}] + nixos_services %}
+      {%   set urls = [] %}
+      {%   for host in nixos_service_hosts %}
+      {%     set _ = urls.append(service.scheme ~ '://' ~ service.user | default('') ~ host ~ ':' ~ service.port ~ service.path | default('')) %}
+      {%   endfor %}
+      {%   set _ = lines.append(service.name ~ ': ' ~ urls | join('  or  ')) %}
+      {% endfor %}
+      {{ lines | to_json }}
