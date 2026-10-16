@@ -99,8 +99,8 @@
     arr_local_networks: "{{ ([nixos_current_subnet] + arr_extra_local_networks | default([])) | join(',') }}"
 
     # /data on the NAS when the inventory gives the NFS export. The export
-    # must let root create and chown the directories below (no root squash)
-    # and the apps write as arr_media_env's IDs.
+    # must let the apps write; one that maps all users to one (mapall,
+    # all_squash) works, the owners set below then don't apply.
     nixos_mounts: >-
       {{ [{'path': '/data', 'device': arr_data_nfs_device, 'fsType': 'nfs',
            'options': arr_data_nfs_options | default(['noatime'])}]
@@ -288,8 +288,10 @@
         networks: ["immich"]
         labels: "{{ nixos_container_autoupdate_label }}"
       # Nextcloud: its code and config.php on the disk, the users' files on
-      # /data. Installed and configured by config/nextcloud.yml (occ), not by
-      # environment variables. Production tag: the stable release once it has
+      # /data, mounted outside the code (/var/www/data): the image's entrypoint
+      # chowns /var/www/html/data, which an NFS export that maps all users to
+      # one refuses. Installed and configured by config/nextcloud.yml (occ),
+      # not by environment variables. Production tag: the stable release once it has
       # had a few fixes, one major version at a time (Nextcloud can't skip one).
       nextcloud:
         image: docker.io/library/nextcloud:production-apache
@@ -303,7 +305,7 @@
           PHP_MEMORY_LIMIT: 1G
         volumes:
           - /var/lib/nextcloud/html:/var/www/html
-          - /data/nextcloud:/var/www/html/data
+          - /data/nextcloud:/var/www/data
         labels: "{{ nixos_container_autoupdate_label }}"
       # Nextcloud's background jobs every 5 minutes (the image's cron.sh)
       nextcloud-cron:
@@ -315,7 +317,7 @@
           TZ: "{{ nixos_timezone }}"
         volumes:
           - /var/lib/nextcloud/html:/var/www/html
-          - /data/nextcloud:/var/www/html/data
+          - /data/nextcloud:/var/www/data
         labels: "{{ nixos_container_autoupdate_label }}"
       # Major version fixed: it can't change without migrating the data
       nextcloud-postgres:
