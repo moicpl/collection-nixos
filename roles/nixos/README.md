@@ -8,9 +8,9 @@ two layers:
   without root login, network (DHCP or a fixed address), firewall, mDNS, base
   packages. Written to `/etc/nixos/configuration.nix` and `/etc/nixos/network.nix`.
 - **Apps** (`tasks/apps.yml`, run with `tasks_from: apps.yml`): podman
-  containers through `virtualisation.oci-containers`, their firewall ports and
-  host directories and config files, written to `/etc/nixos/apps.nix`, and their root-only
-  secret files in `/etc/nixos/secrets/`.
+  containers through `virtualisation.oci-containers`, their firewall ports,
+  host directories, config files and network file systems, written to
+  `/etc/nixos/apps.nix`, and their root-only secret files in `/etc/nixos/secrets/`.
 
 `configuration.nix` imports `apps.nix` when it exists, so either layer rebuilds
 the whole system. The role owns these files (`hardware-configuration.nix` comes
@@ -63,6 +63,7 @@ e.g. `172.16.66.0/24`), `nixos_current_interface`, `nixos_current_gateway`.
 | `nixos_containers` | `virtualisation.oci-containers.containers`, as YAML (apps) |
 | `nixos_container_dirs` | Host directories created for the containers: a path, or `{path, owner, group, mode}` (apps) |
 | `nixos_container_files` | `name: content` config files (not secrets) written to `/etc/apps/<name>`; a container mounts each file it uses in its `volumes` and is restarted when one changes (apps) |
+| `nixos_mounts` | Network file systems for the containers' data: `{path, device, fsType, options}` (NFS by default); a container that mounts a path inside one starts only once it is mounted (apps) |
 | `nixos_container_networks` | Podman networks created for the containers that list them in `networks`; they reach each other by name (apps) |
 | `nixos_firewall_tcp_ports`, `nixos_firewall_udp_ports` | Ports opened for the apps |
 | `nixos_services` | Services listed at the end of the run (`name`, `scheme`, `port`, optional `path`), after SSH |

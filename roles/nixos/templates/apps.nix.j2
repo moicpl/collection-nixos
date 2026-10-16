@@ -44,6 +44,27 @@
     "d {{ dir.path }} {{ dir.mode | default('-') }} {{ dir.owner | default('-') }} {{ dir.group | default('-') }} -"
 {% endfor %}
   ];
+{% for mount in nixos_mounts | sort(attribute='path') %}
+{%   if loop.first %}
+
+  # Network file systems holding the apps' data
+{%   endif %}
+  fileSystems.{{ mount.path | to_json }} = {{ nix({'device': mount.device, 'fsType': mount.fsType | default('nfs'), 'options': mount.options | default([])}, 1) }};
+{% endfor %}
+{% for container in nixos_containers | sort %}
+{%   set paths = nixos_containers[container].volumes | default([]) | map('regex_replace', ':.*', '') | list %}
+{%   set needed = [] %}
+{%   for mount in nixos_mounts %}
+{%     for path in paths if path == mount.path or path.startswith(mount.path ~ '/') %}
+{%       set _ = needed.append(path) %}
+{%     endfor %}
+{%   endfor %}
+{%   if needed %}
+
+  # {{ container }} starts only once its data is mounted, never on the empty mount point
+  systemd.services."podman-{{ container }}".unitConfig.RequiresMountsFor = [ {% for path in needed | unique %}{{ path | to_json }} {% endfor %}];
+{%   endif %}
+{% endfor %}
 {% for name in nixos_container_files | sort %}
 {%   if loop.first %}
 

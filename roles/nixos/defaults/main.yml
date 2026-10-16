@@ -75,6 +75,14 @@ nixos_container_dirs: []
 # in `volumes` (/etc/apps/<name>:<path in the container>), not its directory: a
 # container is restarted when a file it mounts changes.
 nixos_container_files: {}
+# Network file systems for the containers' data (fileSystems in apps.nix):
+# {path, device, fsType (default nfs), options}. The containers that mount a
+# path inside one start only once it is mounted. Keep databases (SQLite,
+# PostgreSQL) on the local disk: they don't work reliably over NFS.
+#   - path: /data
+#     device: nas.example:/export/data
+#     options: [noatime]
+nixos_mounts: []
 # Podman networks created before the containers that list them in `networks`;
 # containers on the same network reach each other by container name
 nixos_container_networks: []

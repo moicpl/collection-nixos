@@ -13,7 +13,7 @@ holds the inventory link, `ansible.cfg` and the thin playbooks that import these
 | --- | --- | --- |
 | `moicpl.nixos.bootstrap_nix` | `nixos_bootstrap`, `nixos` | Installs a machine from the live installer and keeps the base system of every NixOS machine. |
 | `moicpl.nixos.home_management` | `nixos_home` | UniFi, Home Assistant, Frigate and the portal. |
-| `moicpl.nixos.arr_nix` | `nixos_arr` | Sonarr, Radarr, Lidarr, Prowlarr, Transmission (PIA), Jellyfin, Immich and the portal. |
+| `moicpl.nixos.arr_nix` | `nixos_arr` | Sonarr, Radarr, Lidarr, Prowlarr, Transmission (PIA), Jellyfin, Immich, Nextcloud and the portal; /data on the NAS (NFS) when the inventory gives `arr_data_nfs_device`. |
 
 `playbooks/templates/` holds the portal's Caddyfile and page.
 

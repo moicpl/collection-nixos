@@ -1,8 +1,8 @@
 ---
 # Apps of the media machines ([nixos_arr]): Sonarr, Radarr, Lidarr and Prowlarr,
-# Transmission behind the PIA VPN, Jellyfin and Immich, as podman containers on
-# their standard ports, and a portal (Caddy, https://<host>/) with a link to
-# each of them.
+# Transmission behind the PIA VPN, Jellyfin, Immich and Nextcloud, as podman
+# containers on their standard ports (Nextcloud on 8080), and a portal (Caddy,
+# https://<host>/) with a link to each of them.
 #
 # A machine is installed first by bootstrap_nix.yml (base system, SSH key
 # login), then moved in the inventory to [nixos_arr]. Then, from nixos_playbooks/:
@@ -17,20 +17,25 @@
 #
 # Ansible logs in as lab1 with the SSH key from Bitwarden (nixos_playbooks/ssh_keypair.yml).
 #
-# Storage: everything is on the machine's one disk. /data holds the downloads
-# and the media in one tree, so the *arr apps hardlink finished downloads into
-# the library instead of copying them:
+# Storage: the apps' config and databases on the machine's disk (/var/lib/<app>:
+# SQLite and PostgreSQL don't work reliably over NFS; their state is code, in
+# moicpl.app_config). The data in /data: on the NAS when the inventory gives
+# arr_data_nfs_device (NFS, mounted by NixOS on the host, not by the
+# containers), else on the machine's disk. /data holds the downloads and the
+# media in one tree, on one file system, so the *arr apps hardlink finished
+# downloads into the library instead of copying them:
 #   /data/downloads       Transmission (completed, incomplete, watch)
 #   /data/media/movies    Radarr root folder, Jellyfin library
 #   /data/media/tv        Sonarr root folder, Jellyfin library
 #   /data/media/music     Lidarr root folder, Jellyfin library
 #   /data/photos          Immich library
+#   /data/nextcloud       Nextcloud data (users' files)
 # The apps see /data at the same path, so no remote path mapping is needed.
 #
-# Connections to set in the apps' web UIs: Transmission (download client) at
-# transmission:9091 in Sonarr, Radarr and Lidarr; the apps at
-# http://sonarr:8989, http://radarr:7878, http://lidarr:8686 in Prowlarr (they
-# share the arr network and reach each other by container name).
+# What runs inside the containers (logins, libraries, download clients, the
+# apps Prowlarr feeds...) is set by nixos_playbooks/config/<app>.yml
+# (moicpl.app_config). The containers share the arr network and reach each
+# other by container name: transmission:9091, http://sonarr:8989...
 #
 # The run ends with the URL of each service (nixos_services) on each machine.
 #
@@ -53,6 +58,10 @@
       immich.env: |
         POSTGRES_PASSWORD={{ bitwarden_secrets.immich_db_password }}
         DB_PASSWORD={{ bitwarden_secrets.immich_db_password }}
+      # The PostgreSQL user's password, created on its first start;
+      # config/nextcloud.yml gives it to Nextcloud when it installs it
+      nextcloud.env: |
+        POSTGRES_PASSWORD={{ bitwarden_secrets.nextcloud_db_password }}
 
     # Listed at the end of the run as <scheme>://<host>:<port><path>; those
     # with an icon (drawn in templates/portal_index.html.j2) are on the portal
@@ -60,6 +69,7 @@
       - {name: Portal, scheme: https, port: 443}
       - {name: Jellyfin, scheme: http, port: 8096, icon: jellyfin}
       - {name: Immich, scheme: http, port: 2283, icon: immich}
+      - {name: Nextcloud, scheme: http, port: 8080, icon: nextcloud}
       - {name: Sonarr, scheme: http, port: 8989, icon: sonarr}
       - {name: Radarr, scheme: http, port: 7878, icon: radarr}
       - {name: Lidarr, scheme: http, port: 8686, icon: lidarr}
@@ -78,6 +88,7 @@
       - 9091   # Transmission web UI and RPC
       - 8096   # Jellyfin
       - 2283   # Immich
+      - 8080   # Nextcloud
     nixos_firewall_udp_ports:
       - 7359   # Jellyfin client discovery
 
@@ -85,6 +96,14 @@
     # the host's own subnet, read by the nixos role (apps.yml) after login,
     # and the inventory's arr_extra_local_networks
     arr_local_networks: "{{ ([nixos_current_subnet] + arr_extra_local_networks | default([])) | join(',') }}"
+
+    # /data on the NAS when the inventory gives the NFS export. The export
+    # must let root create and chown the directories below (no root squash)
+    # and the apps write as arr_media_env's IDs.
+    nixos_mounts: >-
+      {{ [{'path': '/data', 'device': arr_data_nfs_device, 'fsType': 'nfs',
+           'options': arr_data_nfs_options | default(['noatime'])}]
+         if arr_data_nfs_device | default('') | length > 0 else [] }}
 
     # User and group the media apps run as, owner of the files in /data (no
     # matching host account: the containers only need the numeric IDs)
@@ -114,6 +133,11 @@
       - "{{ {'path': '/data/media/tv'} | combine(arr_media_dir) }}"
       - "{{ {'path': '/data/media/music'} | combine(arr_media_dir) }}"
       - /data/photos
+      # www-data in the Nextcloud image, which wants the data directory 0770
+      - {path: /data/nextcloud, owner: "33", group: "33", mode: "0770"}
+      - /var/lib/nextcloud
+      - /var/lib/nextcloud/html
+      - /var/lib/nextcloud/postgres
       - /var/lib/portal
       - /var/lib/portal/data
       - /var/lib/portal/config
@@ -127,10 +151,12 @@
       portal/Caddyfile: "{{ lookup('ansible.builtin.template', 'portal_Caddyfile.j2') }}"
       portal/index.html: "{{ lookup('ansible.builtin.template', 'portal_index.html.j2') }}"
 
-    # arr: the *arr apps and Transmission; immich: Immich and its databases
+    # arr: the *arr apps and Transmission; immich, nextcloud: each app and
+    # its databases
     nixos_container_networks:
       - arr
       - immich
+      - nextcloud
 
     nixos_container_autoupdate_label:
       io.containers.autoupdate: registry
@@ -171,7 +197,10 @@
         labels: "{{ nixos_container_autoupdate_label }}"
       # All its traffic goes through the PIA tunnel, except replies to
       # arr_local_networks and to the arr network (web UI, RPC). Downloads land
-      # in /data/downloads, on the same file system as the media.
+      # in /data/downloads, on the same file system as the media. Only the
+      # paths are set here: an environment TRANSMISSION_* setting overrides
+      # settings.json at each start, so the others (speed, ratio...) are set
+      # by config/transmission.yml (moicpl.app_config).
       transmission:
         image: docker.io/haugene/transmission-openvpn:latest
         networks: ["arr"]
@@ -186,13 +215,7 @@
                'TRANSMISSION_DOWNLOAD_DIR': '/data/downloads/completed',
                'TRANSMISSION_INCOMPLETE_DIR': '/data/downloads/incomplete',
                'TRANSMISSION_WATCH_DIR': '/data/downloads/watch',
-               'TRANSMISSION_RPC_WHITELIST_ENABLED': 'false',
-               'TRANSMISSION_RATIO_LIMIT': '10',
-               'TRANSMISSION_RATIO_LIMIT_ENABLED': 'true',
-               'TRANSMISSION_SPEED_LIMIT_DOWN': '50000',
-               'TRANSMISSION_SPEED_LIMIT_DOWN_ENABLED': 'true',
-               'TRANSMISSION_SPEED_LIMIT_UP': '50000',
-               'TRANSMISSION_SPEED_LIMIT_UP_ENABLED': 'true'}) }}
+               'TRANSMISSION_RPC_WHITELIST_ENABLED': 'false'}) }}
         environmentFiles: ["/etc/nixos/secrets/transmission.env"]
         volumes:
           - /var/lib/transmission:/config
@@ -257,6 +280,50 @@
         image: docker.io/valkey/valkey:latest
         networks: ["immich"]
         labels: "{{ nixos_container_autoupdate_label }}"
+      # Nextcloud: its code and config.php on the disk, the users' files on
+      # /data. Installed and configured by config/nextcloud.yml (occ), not by
+      # environment variables. Production tag: the stable release once it has
+      # had a few fixes, one major version at a time (Nextcloud can't skip one).
+      nextcloud:
+        image: docker.io/library/nextcloud:production-apache
+        dependsOn: ["nextcloud-postgres", "nextcloud-redis"]
+        networks: ["nextcloud"]
+        ports: ["8080:80"]
+        environment:
+          TZ: "{{ nixos_timezone }}"
+          REDIS_HOST: nextcloud-redis
+          PHP_UPLOAD_LIMIT: 16G
+          PHP_MEMORY_LIMIT: 1G
+        volumes:
+          - /var/lib/nextcloud/html:/var/www/html
+          - /data/nextcloud:/var/www/html/data
+        labels: "{{ nixos_container_autoupdate_label }}"
+      # Nextcloud's background jobs every 5 minutes (the image's cron.sh)
+      nextcloud-cron:
+        image: docker.io/library/nextcloud:production-apache
+        entrypoint: /cron.sh
+        dependsOn: ["nextcloud"]
+        networks: ["nextcloud"]
+        environment:
+          TZ: "{{ nixos_timezone }}"
+        volumes:
+          - /var/lib/nextcloud/html:/var/www/html
+          - /data/nextcloud:/var/www/html/data
+        labels: "{{ nixos_container_autoupdate_label }}"
+      # Major version fixed: it can't change without migrating the data
+      nextcloud-postgres:
+        image: docker.io/library/postgres:16
+        networks: ["nextcloud"]
+        environment:
+          POSTGRES_USER: nextcloud
+          POSTGRES_DB: nextcloud
+        environmentFiles: ["/etc/nixos/secrets/nextcloud.env"]
+        volumes: ["/var/lib/nextcloud/postgres:/var/lib/postgresql/data"]
+        labels: "{{ nixos_container_autoupdate_label }}"
+      nextcloud-redis:
+        image: docker.io/valkey/valkey:latest
+        networks: ["nextcloud"]
+        labels: "{{ nixos_container_autoupdate_label }}"
       # /data holds its CA and certificates
       portal:
         image: docker.io/library/caddy:2
@@ -272,20 +339,25 @@
 
   pre_tasks:
     # Generated once, letters and digits only (Immich requirement); the
-    # bitwarden role records immich_db_password_bws_id
-    - name: arr_nix.yml | Create the Immich database password in Bitwarden
+    # bitwarden role records <name>_bws_id in the host's host_vars
+    - name: arr_nix.yml | Create the database passwords in Bitwarden
       ansible.builtin.include_role:
         name: bitwarden
         apply:
           tags: always
       vars:
         bitwarden_action: put
-        bitwarden_secret_name: immich_db_password
+        bitwarden_secret_name: "{{ item.name }}"
         bitwarden_secret_content: "{{ lookup('ansible.builtin.password', '/dev/null', chars=['ascii_letters', 'digits'], length=32) }}"
-        bitwarden_secret_note: "Immich PostgreSQL password on {{ inventory_hostname }}, created by moicpl.nixos.arr_nix"
+        bitwarden_secret_note: "{{ item.app }} PostgreSQL password on {{ inventory_hostname }}, created by moicpl.nixos.arr_nix"
         bitwarden_secret_id_file: "{{ ansible_inventory_sources | first }}/host_vars/{{ inventory_hostname }}.yml"
+      loop:
+        - {name: immich_db_password, app: Immich}
+        - {name: nextcloud_db_password, app: Nextcloud}
+      loop_control:
+        label: "{{ item.name }}"
       when:
-        - immich_db_password_bws_id is not defined
+        - lookup('ansible.builtin.vars', item.name ~ '_bws_id', default='') | length == 0
         - not nixos_apps_remove | default(false) | bool
       tags: always
 
@@ -341,6 +413,7 @@
       loop:
         - "{{ ssh_key_name }}_private_key"
         - immich_db_password
+        - nextcloud_db_password
         - pia_username
         - pia_password
       when: item.endswith('_private_key') or not nixos_apps_remove | default(false) | bool
