@@ -11,6 +11,10 @@
 # The first run also asks for the PIA username and password and stores them in
 # Bitwarden (pia_username, pia_password).
 #
+# To remove all the containers (their images, networks, ports and secret
+# files too), keeping their data in /var/lib/<app> and /data:
+#   ansible-playbook arr_nix.yml -e nixos_apps_remove=true
+#
 # Ansible logs in as lab1 with the SSH key from Bitwarden (nixos_playbooks/ssh_keypair.yml).
 #
 # Storage: everything is on the machine's one disk. /data holds the downloads
@@ -78,9 +82,9 @@
       - 7359   # Jellyfin client discovery
 
     # Networks that may reach the Transmission web UI around the VPN tunnel:
-    # the host's own subnet, read by the nixos role (apps.yml) after login.
-    # Comma-separated to add others.
-    arr_local_networks: "{{ nixos_current_subnet }}"
+    # the host's own subnet, read by the nixos role (apps.yml) after login,
+    # and the inventory's arr_extra_local_networks
+    arr_local_networks: "{{ ([nixos_current_subnet] + arr_extra_local_networks | default([])) | join(',') }}"
 
     # User and group the media apps run as, owner of the files in /data (no
     # matching host account: the containers only need the numeric IDs)
@@ -280,7 +284,9 @@
         bitwarden_secret_content: "{{ lookup('ansible.builtin.password', '/dev/null', chars=['ascii_letters', 'digits'], length=32) }}"
         bitwarden_secret_note: "Immich PostgreSQL password on {{ inventory_hostname }}, created by moicpl.nixos.arr_nix"
         bitwarden_secret_id_file: "{{ ansible_inventory_sources | first }}/host_vars/{{ inventory_hostname }}.yml"
-      when: immich_db_password_bws_id is not defined
+      when:
+        - immich_db_password_bws_id is not defined
+        - not nixos_apps_remove | default(false) | bool
       tags: always
 
     # The PIA account can't be generated: asked for once, then read from
@@ -292,7 +298,9 @@
       loop:
         - username
         - password
-      when: lookup('ansible.builtin.vars', 'pia_' ~ item ~ '_bws_id', default='') | length == 0
+      when:
+        - lookup('ansible.builtin.vars', 'pia_' ~ item ~ '_bws_id', default='') | length == 0
+        - not nixos_apps_remove | default(false) | bool
       register: arr_pia_input
       no_log: true
       tags: always
@@ -321,6 +329,7 @@
         label: "pia_{{ item.item }}"
       tags: always
 
+    # Removing the apps needs only the login key
     - name: arr_nix.yml | Get the secrets from Bitwarden
       ansible.builtin.include_role:
         name: bitwarden
@@ -334,6 +343,7 @@
         - immich_db_password
         - pia_username
         - pia_password
+      when: item.endswith('_private_key') or not nixos_apps_remove | default(false) | bool
       tags: always
 
   tasks:

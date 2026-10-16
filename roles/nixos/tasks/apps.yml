@@ -2,7 +2,7 @@
 # Apps of a host installed by bootstrap_nix.yml (tasks/main.yml): writes its
 # containers, their firewall ports and secret files to /etc/nixos/apps.nix and
 # /etc/nixos/secrets, and applies them. Run by the apps playbooks with
-# tasks_from: apps.yml.
+# tasks_from: apps.yml. With nixos_apps_remove, removes them instead.
 - name: apps.yml | Check the role inputs
   ansible.builtin.assert:
     that:
@@ -36,36 +36,83 @@
           run bootstrap_nix.yml first.
         quiet: true
 
-    - name: apps.yml | Create the secrets directory
-      ansible.builtin.file:
-        path: /etc/nixos/secrets
-        state: directory
-        owner: root
-        group: root
-        mode: "0700"
+    - name: apps.yml | Write the apps
+      when: not nixos_apps_remove | bool
+      block:
+        - name: apps.yml | Create the secrets directory
+          ansible.builtin.file:
+            path: /etc/nixos/secrets
+            state: directory
+            owner: root
+            group: root
+            mode: "0700"
 
-    - name: apps.yml | Write the apps configuration
-      ansible.builtin.template:
-        src: apps.nix.j2
-        dest: /etc/nixos/apps.nix
-        owner: root
-        group: root
-        mode: "0644"
-        validate: nix-instantiate --parse %s
-      register: nixos_apps_config
+        - name: apps.yml | Write the apps configuration
+          ansible.builtin.template:
+            src: apps.nix.j2
+            dest: /etc/nixos/apps.nix
+            owner: root
+            group: root
+            mode: "0644"
+            validate: nix-instantiate --parse %s
+          register: nixos_apps_config
 
-    - name: apps.yml | Write the secret files
-      ansible.builtin.copy:
-        content: "{{ item.value }}"
-        dest: "/etc/nixos/secrets/{{ item.key }}"
-        owner: root
-        group: root
-        mode: "0600"
-      loop: "{{ nixos_secret_files | dict2items }}"
-      loop_control:
-        label: "{{ item.key }}"
-      register: nixos_apps_secrets
-      no_log: true
+        - name: apps.yml | Write the secret files
+          ansible.builtin.copy:
+            content: "{{ item.value }}"
+            dest: "/etc/nixos/secrets/{{ item.key }}"
+            owner: root
+            group: root
+            mode: "0600"
+          loop: "{{ nixos_secret_files | dict2items }}"
+          loop_control:
+            label: "{{ item.key }}"
+          register: nixos_apps_secrets
+          no_log: true
+
+    # Back to the base system: without apps.nix, the rebuild deletes the
+    # containers' services, ports, networks and config files. Podman's storage
+    # (images, named volumes) is reset first, while podman is still installed.
+    # The host directories the containers mount (nixos_container_dirs: app
+    # settings, media) are kept.
+    - name: apps.yml | Remove the apps
+      when: nixos_apps_remove | bool
+      block:
+        - name: apps.yml | Check whether the host has apps
+          ansible.builtin.stat:
+            path: /etc/nixos/apps.nix
+          register: nixos_apps_file
+
+        # Else systemd restarts them while podman's storage is reset
+        - name: apps.yml | Stop the containers
+          ansible.builtin.command:
+            argv:
+              - systemctl
+              - stop
+              - podman-*.service
+          changed_when: true
+          when: nixos_apps_file.stat.exists
+
+        - name: apps.yml | Delete podman's containers, images, networks and volumes
+          ansible.builtin.command:
+            argv:
+              - podman
+              - system
+              - reset
+              - --force
+          changed_when: true
+          when: nixos_apps_file.stat.exists
+
+        - name: apps.yml | Delete the secret files
+          ansible.builtin.file:
+            path: /etc/nixos/secrets
+            state: absent
+
+        - name: apps.yml | Delete the apps configuration
+          ansible.builtin.file:
+            path: /etc/nixos/apps.nix
+            state: absent
+          register: nixos_apps_removed
 
     # Starting new containers pulls their images, which can take a while
     - name: apps.yml | Apply the configuration with nixos-rebuild
@@ -76,7 +123,9 @@
       async: 3600
       poll: 15
       changed_when: true
-      when: nixos_apps_config is changed or nixos_apps_secrets is changed or nixos_rebuild_force | bool
+      when: >-
+        nixos_apps_config is changed or nixos_apps_secrets is changed
+        or nixos_apps_removed is changed or nixos_rebuild_force | bool
 
     - name: apps.yml | Check that the containers are running
       ansible.builtin.command:
@@ -90,6 +139,8 @@
       until: nixos_container_state.rc == 0
       retries: 60
       delay: 10
+      when: not nixos_apps_remove | bool
 
 - name: apps.yml | Show how to reach the services
   ansible.builtin.include_tasks: services.yml
+  when: not nixos_apps_remove | bool

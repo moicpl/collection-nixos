@@ -66,6 +66,8 @@ e.g. `172.16.66.0/24`), `nixos_current_interface`, `nixos_current_gateway`.
 | `nixos_container_networks` | Podman networks created for the containers that list them in `networks`; they reach each other by name (apps) |
 | `nixos_firewall_tcp_ports`, `nixos_firewall_udp_ports` | Ports opened for the apps |
 | `nixos_services` | Services listed at the end of the run (`name`, `scheme`, `port`, optional `path`), after SSH |
+| `nixos_rebuild_force` | Run `nixos-rebuild switch` even when no file changed |
+| `nixos_apps_remove` | Remove the apps instead: stops the containers, resets podman's storage (images, networks, named volumes), deletes `apps.nix` and the secret files and rebuilds. Keeps the `nixos_container_dirs` |
 
 See `defaults/main.yml` for the others.
 

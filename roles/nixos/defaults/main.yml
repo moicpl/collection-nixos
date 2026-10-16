@@ -87,3 +87,9 @@ nixos_services: []
 
 # Run nixos-rebuild switch even if no file changed (e.g. after a failed rebuild)
 nixos_rebuild_force: false
+
+# Remove the apps instead (pass it with -e): stops the containers, resets
+# podman's storage (containers, images, networks, named volumes), deletes
+# apps.nix and the secret files and rebuilds, which closes the apps' ports.
+# Keeps the host directories of nixos_container_dirs (app settings, media).
+nixos_apps_remove: false
