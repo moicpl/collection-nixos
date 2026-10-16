@@ -51,9 +51,12 @@
   vars:
     nixos_ssh_private_key: "{{ bitwarden_secrets[ssh_key_name ~ '_private_key'] }}"
     nixos_secret_files:
+      # The web UI and RPC login too: the image sets it from its environment
+      # at each start (settings.json can't keep one)
       transmission.env: |
         OPENVPN_USERNAME={{ bitwarden_secrets.pia_username }}
         OPENVPN_PASSWORD={{ bitwarden_secrets.pia_password }}
+        TRANSMISSION_RPC_PASSWORD={{ bitwarden_secrets.transmission_rpc_password }}
       # Same password for the PostgreSQL user (created on its first start) and
       # the Immich connection to it
       immich.env: |
@@ -203,11 +206,13 @@
         volumes: ["/var/lib/prowlarr:/config"]
         labels: "{{ nixos_container_autoupdate_label }}"
       # All its traffic goes through the PIA tunnel, except replies to
-      # arr_local_networks and to the arr network (web UI, RPC). Downloads land
-      # in /data/downloads, on the same file system as the media. Only the
-      # paths are set here: an environment TRANSMISSION_* setting overrides
-      # settings.json at each start, so the others (speed, ratio...) are set
-      # by config/transmission.yml (moicpl.app_config).
+      # arr_local_networks and to the arr network (web UI, RPC, behind a login:
+      # transmission_rpc_username, transmission_rpc_password in Bitwarden).
+      # Downloads land in /data/downloads, on the same file system as the
+      # media. Only the paths and the login are set here: an environment
+      # TRANSMISSION_* setting overrides settings.json at each start, so the
+      # others (speed, ratio...) are set by config/transmission.yml
+      # (moicpl.app_config).
       transmission:
         image: docker.io/haugene/transmission-openvpn:latest
         networks: ["arr"]
@@ -222,7 +227,9 @@
                'TRANSMISSION_DOWNLOAD_DIR': '/data/downloads/completed',
                'TRANSMISSION_INCOMPLETE_DIR': '/data/downloads/incomplete',
                'TRANSMISSION_WATCH_DIR': '/data/downloads/watch',
-               'TRANSMISSION_RPC_WHITELIST_ENABLED': 'false'}) }}
+               'TRANSMISSION_RPC_WHITELIST_ENABLED': 'false',
+               'TRANSMISSION_RPC_AUTHENTICATION_REQUIRED': 'true',
+               'TRANSMISSION_RPC_USERNAME': transmission_rpc_username | default('transmission')}) }}
         environmentFiles: ["/etc/nixos/secrets/transmission.env"]
         volumes:
           - /var/lib/transmission:/config
@@ -350,7 +357,7 @@
   pre_tasks:
     # Generated once, letters and digits only (Immich requirement); the
     # bitwarden role records <name>_bws_id in the host's host_vars
-    - name: arr_nix.yml | Create the database passwords in Bitwarden
+    - name: arr_nix.yml | Create the apps' passwords in Bitwarden
       ansible.builtin.include_role:
         name: bitwarden
         apply:
@@ -359,11 +366,12 @@
         bitwarden_action: put
         bitwarden_secret_name: "{{ item.name }}"
         bitwarden_secret_content: "{{ lookup('ansible.builtin.password', '/dev/null', chars=['ascii_letters', 'digits'], length=32) }}"
-        bitwarden_secret_note: "{{ item.app }} PostgreSQL password on {{ inventory_hostname }}, created by moicpl.nixos.arr_nix"
+        bitwarden_secret_note: "{{ item.what }} on {{ inventory_hostname }}, created by moicpl.nixos.arr_nix"
         bitwarden_secret_id_file: "{{ ansible_inventory_sources | first }}/host_vars/{{ inventory_hostname }}.yml"
       loop:
-        - {name: immich_db_password, app: Immich}
-        - {name: nextcloud_db_password, app: Nextcloud}
+        - {name: immich_db_password, what: Immich PostgreSQL password}
+        - {name: nextcloud_db_password, what: Nextcloud PostgreSQL password}
+        - {name: transmission_rpc_password, what: Transmission web UI and RPC password}
       loop_control:
         label: "{{ item.name }}"
       when:
@@ -424,6 +432,7 @@
         - "{{ ssh_key_name }}_private_key"
         - immich_db_password
         - nextcloud_db_password
+        - transmission_rpc_password
         - pia_username
         - pia_password
       when: item.endswith('_private_key') or not nixos_apps_remove | default(false) | bool
