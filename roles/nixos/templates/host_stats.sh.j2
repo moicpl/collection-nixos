@@ -1,0 +1,45 @@
+# Every {{ nixos_stats_interval }} s: CPU use since the previous round, load,
+# memory and disks, as JSON in {{ nixos_stats_dir }}/stats.json (written to a
+# temporary file, then renamed: readers never see half a file)
+set -o pipefail
+out={{ nixos_stats_dir }}/stats.json
+cpus=$(nproc)
+prev_total=0
+prev_idle=0
+while true; do
+  read -r _ user nice system idle iowait irq softirq steal _ < /proc/stat
+  total=$((user + nice + system + idle + iowait + irq + softirq + steal))
+  idle_all=$((idle + iowait))
+  cpu=0
+  if [ "$prev_total" -gt 0 ] && [ "$total" -gt "$prev_total" ]; then
+    cpu=$((1000 * ((total - prev_total) - (idle_all - prev_idle)) / (total - prev_total)))
+  fi
+  prev_total=$total
+  prev_idle=$idle_all
+
+  mem_total=$(awk '/^MemTotal:/ { print $2 * 1024 }' /proc/meminfo)
+  mem_available=$(awk '/^MemAvailable:/ { print $2 * 1024 }' /proc/meminfo)
+  read -r load _ < /proc/loadavg
+
+  # A disk that is missing, or a network file system that doesn't answer
+  # (which mustn't stop the loop), is left out
+  disks=""
+{% for disk in nixos_stats_disks %}
+  size=""
+  used=""
+  if line=$(timeout 3 df -B1 --output=size,used {{ disk.path | quote }} 2>/dev/null | tail -n 1); then
+    read -r size used <<< "$line"
+  fi
+  if [[ $size =~ ^[0-9]+$ && $used =~ ^[0-9]+$ ]]; then
+    name={{ disk.name | to_json | quote }}
+    path={{ disk.path | to_json | quote }}
+    disks="$disks${disks:+,}{\"name\":$name,\"path\":$path,\"size\":$size,\"used\":$used}"
+  fi
+{% endfor %}
+
+  printf '{"time":%s,"cpu":%s.%s,"cpus":%s,"load":%s,"memory":{"total":%s,"used":%s},"disks":[%s]}\n' \
+    "$(date +%s)" $((cpu / 10)) $((cpu % 10)) "$cpus" "$load" \
+    "$mem_total" $((mem_total - mem_available)) "$disks" > "$out.tmp"
+  mv "$out.tmp" "$out"
+  sleep {{ nixos_stats_interval }}
+done

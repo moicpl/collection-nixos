@@ -99,6 +99,18 @@
     requiredBy = [ {% for name in users %}"podman-{{ name }}.service" {% endfor %}];
   };
 {% endfor %}
+{% if nixos_stats_dir | length > 0 %}
+{%   set script %}{% include 'host_stats.sh.j2' %}{% endset %}
+
+  # Resource stats (CPU, memory, disks) as JSON, e.g. for the portal page
+  systemd.services.host-stats = {
+    description = "Resource stats in {{ nixos_stats_dir }}/stats.json";
+    wantedBy = [ "multi-user.target" ];
+    path = [ pkgs.coreutils pkgs.gawk ];
+    serviceConfig.Restart = "always";
+    script = {{ nix(script, 1) }};
+  };
+{% endif %}
 {% if nixos_container_autoupdate | bool %}
 
   # Pulls newer images daily and restarts the containers that use them

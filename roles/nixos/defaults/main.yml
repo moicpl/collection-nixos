@@ -89,6 +89,16 @@ nixos_container_networks: []
 # Daily podman auto-update for containers labelled io.containers.autoupdate=registry
 nixos_container_autoupdate: true
 
+# Resource stats (CPU use and load, memory, disk use) written by a host service
+# every nixos_stats_interval seconds as <nixos_stats_dir>/stats.json, e.g. for
+# a page served by a container that mounts the directory. Empty: no service.
+# Disks: {name, path}, the file system holding path (a network one too; one that
+# doesn't answer within 3 s is left out of that round).
+nixos_stats_dir: ""
+nixos_stats_interval: 5
+nixos_stats_disks:
+  - {name: System, path: /}
+
 # Listed at the end of the run, after SSH, as <scheme>://<host>:<port><path>:
 # name, scheme, port, optional path
 nixos_services: []

@@ -24,9 +24,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{ inventory_hostname_short }}</title>
 <style>
-  :root { color-scheme: light dark; --bg: #f3f4f6; --card: #ffffff; --text: #111827; --muted: #6b7280; }
+  :root { color-scheme: light dark; --bg: #f3f4f6; --card: #ffffff; --text: #111827; --muted: #6b7280;
+          --track: #e5e7eb; --ok: #2563eb; --warn: #d97706; --crit: #dc2626; }
   @media (prefers-color-scheme: dark) {
-    :root { --bg: #111318; --card: #1c1f26; --text: #e5e7eb; --muted: #9ca3af; }
+    :root { --bg: #111318; --card: #1c1f26; --text: #e5e7eb; --muted: #9ca3af;
+            --track: #2b303a; --ok: #60a5fa; --warn: #fbbf24; --crit: #f87171; }
   }
   * { box-sizing: border-box; }
   body { margin: 0; min-height: 100vh; display: flex; flex-direction: column; align-items: center;
@@ -44,6 +46,20 @@
         stroke-linecap: round; stroke-linejoin: round; }
   .name { font-weight: 600; }
   .url { font-size: 0.75rem; color: var(--muted); }
+  .stats { display: grid; gap: 0.9rem; width: 100%; max-width: 40rem; padding: 1.25rem 1.5rem;
+           border-radius: 1rem; background: var(--card); box-shadow: 0 1px 3px rgb(0 0 0 / 0.12);
+           transition: opacity 0.3s; }
+  .stats[hidden] { display: none; }
+  #meters { display: grid; gap: 0.9rem; }
+  .stats.stale { opacity: 0.55; }
+  .meter-head { display: flex; justify-content: space-between; gap: 1rem; font-size: 0.875rem; }
+  .meter-name { font-weight: 600; }
+  .meter-value, .stats-time { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .stats-time { font-size: 0.75rem; text-align: right; }
+  .bar { height: 0.5rem; margin-top: 0.35rem; border-radius: 999px; background: var(--track); overflow: hidden; }
+  .bar > span { display: block; height: 100%; border-radius: inherit; background: var(--ok); transition: width 0.4s; }
+  .bar.warn > span { background: var(--warn); }
+  .bar.crit > span { background: var(--crit); }
 </style>
 </head>
 <body>
@@ -57,6 +73,10 @@
   </a>
 {% endfor %}
 </nav>
+<section class="stats" id="stats" aria-label="Resources" hidden>
+  <div id="meters"></div>
+  <div class="stats-time" id="stats-time"></div>
+</section>
 <script>
   // Same host as the portal, whatever name or address it was opened with
   for (const link of document.querySelectorAll("a[data-port]")) {
@@ -64,6 +84,56 @@
     url.hostname = location.hostname;
     link.href = url.href;
   }
+
+  // Resources, from the stats.json a host service writes every few seconds
+  // (nixos role, nixos_stats_dir); hidden until it loads, dimmed when stale
+  const stats = document.getElementById("stats");
+  const meters = document.getElementById("meters");
+  const statsTime = document.getElementById("stats-time");
+  const gb = (bytes) => (bytes / 1e9).toFixed(bytes >= 1e11 ? 0 : 1) + " GB";
+
+  function meter(name, percent, value) {
+    const head = document.createElement("div");
+    head.className = "meter-head";
+    const label = document.createElement("span");
+    label.className = "meter-name";
+    label.textContent = name;
+    const text = document.createElement("span");
+    text.className = "meter-value";
+    text.textContent = value;
+    head.append(label, text);
+    const bar = document.createElement("div");
+    bar.className = "bar" + (percent >= 90 ? " crit" : percent >= 75 ? " warn" : "");
+    bar.setAttribute("role", "meter");
+    bar.setAttribute("aria-label", name);
+    bar.setAttribute("aria-valuenow", Math.round(percent));
+    bar.append(Object.assign(document.createElement("span"), { style: `width: ${Math.min(percent, 100)}%` }));
+    const item = document.createElement("div");
+    item.append(head, bar);
+    return item;
+  }
+
+  async function refreshStats() {
+    try {
+      const response = await fetch("stats/stats.json", { cache: "no-store" });
+      if (!response.ok) throw new Error(response.status);
+      const s = await response.json();
+      const memory = 100 * s.memory.used / s.memory.total;
+      meters.replaceChildren(
+        meter("CPU", s.cpu, `${Math.round(s.cpu)} % · load ${s.load.toFixed(2)} / ${s.cpus} CPUs`),
+        meter("Memory", memory, `${gb(s.memory.used)} / ${gb(s.memory.total)} · ${Math.round(memory)} %`),
+        ...s.disks.map((d) => meter(`Disk · ${d.name}`, 100 * d.used / d.size,
+                                    `${gb(d.used)} / ${gb(d.size)} · ${Math.round(100 * d.used / d.size)} %`)));
+      const age = Date.now() / 1000 - s.time;
+      stats.classList.toggle("stale", age > 30);
+      statsTime.textContent = (age > 30 ? "stale · " : "") + "updated " + new Date(s.time * 1000).toLocaleTimeString();
+      stats.hidden = false;
+    } catch {
+      stats.classList.add("stale");
+    }
+  }
+  refreshStats();
+  setInterval(refreshStats, 5000);
 </script>
 </body>
 </html>

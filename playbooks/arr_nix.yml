@@ -2,7 +2,8 @@
 # Apps of the media machines ([nixos_arr]): Sonarr, Radarr, Lidarr and Prowlarr,
 # Transmission behind the PIA VPN, Jellyfin, Immich and Nextcloud, as podman
 # containers on their standard ports (Nextcloud on 8080), and a portal (Caddy,
-# https://<host>/) with a link to each of them.
+# https://<host>/) with a link to each of them and the machine's CPU, memory and
+# disk use (nixos_stats_dir).
 #
 # A machine is installed first by bootstrap_nix.yml (base system, SSH key
 # login), then moved in the inventory to [nixos_arr]. Then, from nixos_playbooks/:
@@ -141,12 +142,18 @@
       - /var/lib/portal
       - /var/lib/portal/data
       - /var/lib/portal/config
+      - /var/lib/portal/stats
 
     # Names the portal answers to, each with its certificate: the machine's
     # names, and its address when the inventory has one
     portal_site_names: >-
       {{ [inventory_hostname, inventory_hostname_short]
          + ([ansible_host] if ansible_host | default(inventory_hostname) != inventory_hostname else []) }}
+    # Resource stats for the portal's widget, served as /stats/stats.json
+    nixos_stats_dir: /var/lib/portal/stats
+    nixos_stats_disks:
+      - {name: System, path: /}
+      - {name: Data, path: /data}
     nixos_container_files:
       portal/Caddyfile: "{{ lookup('ansible.builtin.template', 'portal_Caddyfile.j2') }}"
       portal/index.html: "{{ lookup('ansible.builtin.template', 'portal_index.html.j2') }}"
@@ -335,6 +342,7 @@
           - /etc/apps/portal/index.html:/srv/index.html:ro
           - /var/lib/portal/data:/data
           - /var/lib/portal/config:/config
+          - /var/lib/portal/stats:/srv/stats:ro
         labels: "{{ nixos_container_autoupdate_label }}"
 
   pre_tasks:
