@@ -16,6 +16,11 @@
 # files too), keeping their data in /var/lib/<app> and /data:
 #   ansible-playbook arr_nix.yml -e nixos_apps_remove=true
 #
+# The containers follow their image tag (latest, release...): podman pulls newer
+# images daily and restarts them. To update some now, e.g. Immich (its server
+# and machine learning together, same version):
+#   ansible-playbook arr_nix.yml -e nixos_containers_update=immich-server,immich-machine-learning
+#
 # Ansible logs in as lab1 with the SSH key from Bitwarden (nixos_playbooks/ssh_keypair.yml).
 #
 # Storage: the apps' config and databases on the machine's disk (/var/lib/<app>:

@@ -88,6 +88,11 @@ nixos_mounts: []
 nixos_container_networks: []
 # Daily podman auto-update for containers labelled io.containers.autoupdate=registry
 nixos_container_autoupdate: true
+# Containers to update now (pass it with -e), instead of waiting for the daily
+# auto-update: their image tag is pulled again and those whose image changed
+# are restarted. A list, or names separated by commas:
+#   -e nixos_containers_update=immich-server,immich-machine-learning
+nixos_containers_update: []
 
 # Resource stats (CPU use and load, memory, disk use) written by a host service
 # every nixos_stats_interval seconds as <nixos_stats_dir>/stats.json, e.g. for

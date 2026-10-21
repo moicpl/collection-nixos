@@ -69,6 +69,7 @@ e.g. `172.16.66.0/24`), `nixos_current_interface`, `nixos_current_gateway`.
 | `nixos_stats_dir`, `nixos_stats_interval`, `nixos_stats_disks` | A host service writing resource stats (CPU, load, memory, disks) as `<dir>/stats.json` every few seconds, e.g. for the portal page (apps) |
 | `nixos_services` | Services listed at the end of the run (`name`, `scheme`, `port`, optional `path`), after SSH |
 | `nixos_rebuild_force` | Run `nixos-rebuild switch` even when no file changed |
+| `nixos_containers_update` | Containers to update now (`-e nixos_containers_update=a,b`), instead of waiting for the daily auto-update: pulls their image tag again and restarts those whose image changed |
 | `nixos_apps_remove` | Remove the apps instead: stops the containers, resets podman's storage (images, networks, named volumes), deletes `apps.nix` and the secret files and rebuilds. Keeps the `nixos_container_dirs` |
 
 See `defaults/main.yml` for the others.

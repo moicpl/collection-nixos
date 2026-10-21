@@ -127,6 +127,16 @@
         nixos_apps_config is changed or nixos_apps_secrets is changed
         or nixos_apps_removed is changed or nixos_rebuild_force | bool
 
+    - name: apps.yml | Update the containers now
+      ansible.builtin.include_tasks: update.yml
+      vars:
+        nixos_update_containers: >-
+          {{ (nixos_containers_update.split(',') if nixos_containers_update is string else nixos_containers_update)
+             | map('trim') | reject('equalto', '') | list }}
+      when:
+        - not nixos_apps_remove | bool
+        - nixos_containers_update | length > 0
+
     - name: apps.yml | Check that the containers are running
       ansible.builtin.command:
         argv:

@@ -1,0 +1,59 @@
+---
+# Updates the containers of nixos_containers_update now, instead of waiting for
+# the daily podman auto-update: pulls their image tag again and restarts those
+# whose image changed. Run by apps.yml after the rebuild, as root.
+- name: update.yml | Check the containers to update
+  ansible.builtin.assert:
+    that:
+      - nixos_update_containers | difference(nixos_containers.keys() | list) | length == 0
+    fail_msg: >-
+      Unknown container in nixos_containers_update:
+      {{ nixos_update_containers | difference(nixos_containers.keys() | list) | join(', ') }}
+      (the containers are {{ nixos_containers.keys() | sort | join(', ') }}).
+    quiet: true
+
+- name: update.yml | Read the image each container runs
+  ansible.builtin.command:
+    argv:
+      - podman
+      - container
+      - inspect
+      - --format
+      - !unsafe "{{.Image}}"
+      - "{{ item }}"
+  loop: "{{ nixos_update_containers }}"
+  register: nixos_update_running
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+# Once per image (nextcloud and nextcloud-cron share one); prints its ID
+- name: update.yml | Pull the latest images
+  ansible.builtin.command:
+    argv:
+      - podman
+      - pull
+      - --quiet
+      - "{{ item }}"
+  loop: "{{ nixos_update_containers | map('extract', nixos_containers, 'image') | unique }}"
+  register: nixos_update_pulled
+  changed_when: false
+  check_mode: false
+
+# A container that runs another image than the one just pulled (or doesn't
+# run) is restarted on it
+- name: update.yml | Restart the containers on their new image
+  ansible.builtin.systemd_service:
+    name: "podman-{{ item }}.service"
+    state: restarted
+  loop: "{{ nixos_update_restart | from_json }}"
+  vars:
+    nixos_update_images: "{{ nixos_update_pulled.results | items2dict(key_name='item', value_name='stdout') }}"
+    nixos_update_restart: >-
+      {% set names = [] %}
+      {% for result in nixos_update_running.results %}
+      {%   if result.stdout | trim != nixos_update_images[nixos_containers[result.item].image] | trim %}
+      {%     set _ = names.append(result.item) %}
+      {%   endif %}
+      {% endfor %}
+      {{ names | to_json }}
