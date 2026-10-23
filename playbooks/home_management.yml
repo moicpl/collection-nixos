@@ -140,8 +140,11 @@
           - /var/lib/frigate/config:/config
           - /var/lib/frigate/media:/media/frigate
           - /var/lib/frigate/secrets:/run/secrets:ro
-        # Intel iGPU for video decoding
-        devices: ["/dev/dri/renderD128:/dev/dri/renderD128"]
+        # Intel iGPU for video decoding; the USB webcam (MJPEG, up to 1080p),
+        # by its stable name, as /dev/video0 for go2rtc
+        devices:
+          - /dev/dri/renderD128:/dev/dri/renderD128
+          - /dev/v4l/by-id/usb-USB_Camera_USB_Camera_SN0001-video-index0:/dev/video0
         extraOptions:
           - --shm-size=512m
           - --mount=type=tmpfs,target=/tmp/cache,tmpfs-size=1000000000
